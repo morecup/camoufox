@@ -36,6 +36,21 @@ _WINDOWS_MARKER_FONTS = [
 ]
 
 
+def _app_version_from_user_agent(user_agent: str) -> str:
+    """Derive navigator.appVersion from a Firefox user agent string."""
+    if user_agent.startswith('Mozilla/'):
+        return user_agent[len('Mozilla/') :]
+    return user_agent
+
+
+def _sync_user_agent_config(config: Dict[str, Any], user_agent: Optional[str]) -> None:
+    """Keep navigator.userAgent/appVersion aligned inside a fingerprint config."""
+    if not user_agent:
+        return
+    config['navigator.userAgent'] = user_agent
+    config['navigator.appVersion'] = _app_version_from_user_agent(user_agent)
+
+
 def _ensure_marker_fonts(fonts: List[str], markers: List[str]) -> None:
     """Add any missing marker fonts to the font list (in-place)."""
     existing = set(fonts)
@@ -253,7 +268,7 @@ def from_preset(preset: Dict, ff_version: Optional[str] = None) -> Dict[str, Any
         if ff_version:
             ua = re.sub(r'Firefox/\d+\.0', f'Firefox/{ff_version}.0', ua)
             ua = re.sub(r'rv:\d+\.0', f'rv:{ff_version}.0', ua)
-        config['navigator.userAgent'] = ua
+        _sync_user_agent_config(config, ua)
     if nav.get('platform'):
         config['navigator.platform'] = nav['platform']
     if nav.get('hardwareConcurrency'):

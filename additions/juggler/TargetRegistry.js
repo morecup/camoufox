@@ -1029,10 +1029,11 @@ class BrowserContext {
     }
   }
 
-  setDefaultUserAgent(userAgent) {
+  async setDefaultUserAgent(userAgent) {
     this.defaultUserAgent = userAgent;
     for (const page of this.pages)
       page.updateUserAgent();
+    await this.applySetting('userAgent', userAgent);
   }
 
   setDefaultPlatform(platform) {
