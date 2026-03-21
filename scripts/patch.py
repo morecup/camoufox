@@ -145,6 +145,9 @@ class Patcher:
         for rej in rejects:
             os.remove(rej)
 
+        if result.returncode != 0 and not rejects:
+            rejects.append(f'patch exited with status {result.returncode}')
+
         return rejects
 
     def _update_mozconfig(self):
