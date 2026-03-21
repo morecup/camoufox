@@ -9,7 +9,6 @@ This directory is based on the original Playwright-Python [tests](https://github
 It has been modified to skip tests that use the following features:
 
 - Injecting JavaScript into the page or writing to DOM. Camoufox's `page.evaluate` only supports reading values, not executing within the page context.
-- Overriding the User-Agent.
 - Any tests specific to Chromium or Webkit.
 
 ---

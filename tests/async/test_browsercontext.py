@@ -162,7 +162,6 @@ async def test_close_should_be_callable_twice(browser: Browser) -> None:
     await context.close()
 
 
-@pytest.mark.skip(reason="Not supported by Camoufox")
 async def test_user_agent_should_work(browser: Browser, server: Server) -> None:
     async def baseline() -> None:
         context = await browser.new_context()
@@ -198,7 +197,6 @@ async def test_user_agent_should_work_for_subframes(
     await context.close()
 
 
-@pytest.mark.skip(reason="Not supported by Camoufox")
 async def test_user_agent_should_emulate_device_user_agent(
     playwright: Playwright, browser: Browser, server: Server
 ) -> None:

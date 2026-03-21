@@ -274,7 +274,6 @@ async def test_should_support_multipart_form_data(context: BrowserContext, serve
     assert request.args[b"file"][0] == file["buffer"]
 
 
-@pytest.mark.skip(reason="Not supported by Camoufox")
 async def test_should_add_default_headers(
     context: BrowserContext, page: Page, server: Server
 ) -> None:

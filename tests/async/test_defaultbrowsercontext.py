@@ -200,7 +200,6 @@ async def test_should_support_device_scale_factor_option(
     assert await page.evaluate("window.devicePixelRatio") == 3
 
 
-@pytest.mark.skip(reason="Not supported by Camoufox")
 async def test_should_support_user_agent_option(
     launch_persistent: "Callable[..., asyncio.Future[Tuple[Page, BrowserContext]]]",
     server: Server,
