@@ -138,6 +138,7 @@ async def AsyncNewContext(
     os: Optional[str] = None,
     ff_version: Optional[str] = None,
     webrtc_ip: Optional[str] = None,
+    webrtc_ipv6: Optional[str] = None,
     proxy: Optional[Dict[str, str]] = None,
     geolocation: Optional[Dict[str, float]] = None,
     **context_kwargs: Any,
@@ -151,25 +152,33 @@ async def AsyncNewContext(
 
     Parameters:
         browser: A Browser instance from AsyncNewBrowser or AsyncCamoufox.
-        preset: A specific fingerprint preset dict to use. If None, picks randomly.
+        preset: A specific fingerprint preset dict to use. If None, generates one.
         os: Target OS for preset selection ("windows", "macos", "linux").
+            Defaults to Windows when omitted.
         ff_version: Firefox version string for UA patching.
-        webrtc_ip: IPv4 address to spoof for WebRTC ICE candidates.
+        webrtc_ip: Legacy WebRTC IP override. Supports IPv4 or IPv6.
+        webrtc_ipv6: Optional explicit IPv6 override for WebRTC ICE candidates.
         proxy: Per-context proxy (Playwright format: {"server": "...", "username": "...", "password": "..."}).
         geolocation: Per-context geolocation ({"latitude": float, "longitude": float}).
         **context_kwargs: Additional Playwright new_context() options.
     """
     # Auto-derive WebRTC IP and timezone from proxy's exit IP when not explicitly provided
-    if proxy and (not webrtc_ip or "timezone_id" not in context_kwargs):
+    if proxy and (not (webrtc_ip or webrtc_ipv6) or "timezone_id" not in context_kwargs):
         geo = await _resolve_proxy_geo(proxy)
-        if not webrtc_ip:
+        if not (webrtc_ip or webrtc_ipv6):
             webrtc_ip = geo["ip"]
         if "timezone_id" not in context_kwargs and geo["timezone"]:
             context_kwargs["timezone_id"] = geo["timezone"]
 
     fp = await asyncio.get_event_loop().run_in_executor(
         None,
-        lambda: generate_context_fingerprint(preset=preset, os=os, ff_version=ff_version, webrtc_ip=webrtc_ip),
+        lambda: generate_context_fingerprint(
+            preset=preset,
+            os=os,
+            ff_version=ff_version,
+            webrtc_ip=webrtc_ip,
+            webrtc_ipv6=webrtc_ipv6,
+        ),
     )
 
     # Merge generated context options with user overrides (user wins)

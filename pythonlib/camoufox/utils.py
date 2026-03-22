@@ -20,7 +20,7 @@ from .exceptions import (
     InvalidPropertyType,
     NonFirefoxFingerprint,
 )
-from .fingerprints import from_browserforge, from_preset, generate_fingerprint, get_random_preset, _generate_random_font_subset, _generate_random_voice_subset
+from .fingerprints import DEFAULT_FINGERPRINT_OS, from_browserforge, from_preset, generate_fingerprint, get_random_preset, _generate_random_font_subset, _generate_random_voice_subset
 from .geolocation import geoip_allowed, get_geolocation
 from .ip import Proxy, public_ip, valid_ipv4, valid_ipv6
 from .locales import handle_locales
@@ -404,7 +404,7 @@ def launch_options(
         os (Optional[ListOrString]):
             Operating system to use for the fingerprint generation.
             Can be "windows", "macos", "linux", or a list to randomly choose from.
-            Default: ["windows", "macos", "linux"]
+            Default: "windows" (override with `os=` or `CAMOUFOX_DEFAULT_OS`)
         block_images (Optional[bool]):
             Whether to block all images.
         block_webrtc (Optional[bool]):
@@ -517,13 +517,11 @@ def launch_options(
     if not i_know_what_im_doing:
         warn_manual_config(config)
 
-    # Assert the target OS is valid
-    if os:
-        check_valid_os(os)
+    effective_os = os if os is not None else DEFAULT_FINGERPRINT_OS
 
-    # webgl_config requires OS to be set
-    elif webgl_config:
-        raise ValueError('OS must be set when using webgl_config')
+    # Assert the target OS is valid
+    if effective_os:
+        check_valid_os(effective_os)
 
     # Add the default addons
     add_default_addons(addons, exclude_addons)
@@ -551,7 +549,7 @@ def launch_options(
         if isinstance(fingerprint_preset, dict):
             preset = fingerprint_preset
         else:
-            preset = get_random_preset(os=os)
+            preset = get_random_preset(os=effective_os)
         if preset:
             merge_into(config, from_preset(preset, ff_version_str))
             _used_preset = True
@@ -561,7 +559,7 @@ def launch_options(
         fingerprint = generate_fingerprint(
             screen=screen or get_screen_cons(headless or 'DISPLAY' in env),
             window=window,
-            os=os,
+            os=effective_os,
         )
 
     if not _used_preset and fingerprint is not None:

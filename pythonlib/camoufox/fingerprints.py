@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import os
 import re
@@ -34,6 +35,32 @@ _LINUX_MARKER_FONTS = [
 _WINDOWS_MARKER_FONTS = [
     'Segoe UI', 'Tahoma', 'Cambria Math', 'Nirmala UI',
 ]
+
+
+def _normalize_webrtc_ips(
+    webrtc_ip: Optional[str] = None,
+    webrtc_ipv6: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Normalize legacy/new WebRTC IP inputs into explicit IPv4/IPv6 values."""
+    ipv4 = ''
+    ipv6 = ''
+
+    for candidate in (webrtc_ip, webrtc_ipv6):
+        if not candidate:
+            continue
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        try:
+            parsed = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if parsed.version == 4 and not ipv4:
+            ipv4 = candidate
+        elif parsed.version == 6 and not ipv6:
+            ipv6 = candidate
+
+    return ipv4, ipv6
 
 
 def _app_version_from_user_agent(user_agent: str) -> str:
@@ -221,6 +248,18 @@ _OS_TO_PRESET_KEY = {
     'lin': 'linux',
 }
 
+DEFAULT_FINGERPRINT_OS = _OS_TO_PRESET_KEY.get(
+    os.environ.get('CAMOUFOX_DEFAULT_OS', 'windows').strip().lower(),
+    'windows',
+)
+
+
+def resolve_fingerprint_os(target_os: Optional[Any] = None) -> Any:
+    """Use the configured default fingerprint OS when the caller does not specify one."""
+    if target_os is None:
+        return DEFAULT_FINGERPRINT_OS
+    return target_os
+
 
 def get_random_preset(
     os: Optional[str] = None,
@@ -233,16 +272,16 @@ def get_random_preset(
     if not presets:
         return None
 
-    all_os_keys = ['macos', 'windows', 'linux']
+    resolved_os = resolve_fingerprint_os(os)
 
-    if os:
+    if resolved_os:
         # Normalize OS name
-        if isinstance(os, (list, tuple)):
-            os_keys = [_OS_TO_PRESET_KEY.get(o, o) for o in os]
+        if isinstance(resolved_os, (list, tuple)):
+            os_keys = [_OS_TO_PRESET_KEY.get(o, o) for o in resolved_os]
         else:
-            os_keys = [_OS_TO_PRESET_KEY.get(os, os)]
+            os_keys = [_OS_TO_PRESET_KEY.get(resolved_os, resolved_os)]
     else:
-        os_keys = all_os_keys
+        os_keys = ['macos', 'windows', 'linux']
 
     # Collect all matching presets
     candidates: List[Dict] = []
@@ -399,15 +438,16 @@ def _build_init_script(values: Dict[str, Any]) -> str:
             '  if (typeof w.setTimezone === "function") w.setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone);'
         )
 
-    # WebRTC IP
-    ip = values.get('webrtcIP')
-    if ip:
+    # WebRTC IPs
+    ipv4 = values.get('webrtcIPv4')
+    if ipv4:
         lines.append(
-            f'  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4({_json.dumps(ip)});'
+            f'  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4({_json.dumps(ipv4)});'
         )
-    else:
+    ipv6 = values.get('webrtcIPv6')
+    if ipv6:
         lines.append(
-            '  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4("");'
+            f'  if (typeof w.setWebRTCIPv6 === "function") w.setWebRTCIPv6({_json.dumps(ipv6)});'
         )
 
     # Font list (comma-separated)
@@ -435,12 +475,14 @@ def generate_context_fingerprint(
     os: Optional[str] = None,
     ff_version: Optional[str] = None,
     webrtc_ip: Optional[str] = None,
+    webrtc_ipv6: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Generate fingerprint values for a single per-context identity.
     Returns a dict with init_script (JS string) and context_options (Playwright options).
 
-    By default, uses BrowserForge for infinite unique synthetic fingerprints.
+    By default, uses BrowserForge for infinite unique synthetic fingerprints
+    and resolves the target OS to Windows unless the caller overrides it.
     Pass a preset dict to use a real fingerprint preset instead.
     """
     if preset is not None:
@@ -450,8 +492,9 @@ def generate_context_fingerprint(
         screen = preset.get('screen', {})
         webgl = preset.get('webgl', {})
     else:
+        effective_os = resolve_fingerprint_os(os)
         # Fall back to BrowserForge synthetic generation
-        fp = generate_fingerprint(os=os)
+        fp = generate_fingerprint(os=effective_os)
         config = from_browserforge(fp, ff_version)
 
         # Add seeds (BrowserForge doesn't generate these)
@@ -494,7 +537,7 @@ def generate_context_fingerprint(
         # Sample WebGL vendor/renderer from database (BrowserForge doesn't generate these)
         if not config.get('webGl:vendor') or not config.get('webGl:renderer'):
             _os_map = {'macos': 'mac', 'linux': 'lin', 'windows': 'win'}
-            _target_os = _os_map.get(os or '', None)
+            _target_os = _os_map.get(effective_os or '', None)
             if not _target_os:
                 plat = config.get('navigator.platform', '')
                 if plat == 'Win32':
@@ -527,6 +570,11 @@ def generate_context_fingerprint(
         }
         preset = {'navigator': nav, 'screen': screen, 'webgl': webgl}
 
+    webrtc_ipv4_value, webrtc_ipv6_value = _normalize_webrtc_ips(
+        webrtc_ip=webrtc_ip,
+        webrtc_ipv6=webrtc_ipv6,
+    )
+
     # Build the values dict for the init script (works for both paths)
     init_values: Dict[str, Any] = {
         'fontSpacingSeed': config.get('fonts:spacing_seed'),
@@ -544,7 +592,8 @@ def generate_context_fingerprint(
         'timezone': preset.get('timezone') if isinstance(preset.get('timezone'), str) else config.get('timezone'),
         'fontList': config.get('fonts'),
         'speechVoices': config.get('voices'),
-        'webrtcIP': webrtc_ip or '',
+        'webrtcIPv4': webrtc_ipv4_value,
+        'webrtcIPv6': webrtc_ipv6_value,
     }
 
     init_script = _build_init_script(init_values)
@@ -688,7 +737,11 @@ def handle_window_size(fp: Fingerprint, outer_width: int, outer_height: int) -> 
 def generate_fingerprint(window: Optional[Tuple[int, int]] = None, **config) -> Fingerprint:
     """
     Generates a Firefox fingerprint with Browserforge.
+    If no OS is provided, defaults to a Windows fingerprint profile.
     """
+    config = dict(config)
+    config.setdefault('os', DEFAULT_FINGERPRINT_OS)
+
     if window:  # User-specified outer window size
         fingerprint = FP_GENERATOR.generate(**config)
         handle_window_size(fingerprint, *window)

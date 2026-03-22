@@ -91,11 +91,22 @@ def inject_timezone(preset: dict, timezone: str) -> None:
 
 
 def inject_webrtc_ip(preset: dict) -> None:
-    preset["initScript"] = re.sub(
-        r'w\.setWebRTCIPv4\(""\)',
+    updated = re.sub(
+        r'w\.setWebRTCIPv4\([^)]*\)',
         f"w.setWebRTCIPv4({json.dumps(WEBRTC_TEST_IP)})",
         preset["initScript"],
+        count=1,
     )
+    if updated == preset["initScript"]:
+        updated = preset["initScript"].replace(
+            '  var w = window;',
+            (
+                '  var w = window;\n'
+                f'  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4({json.dumps(WEBRTC_TEST_IP)});'
+            ),
+            1,
+        )
+    preset["initScript"] = updated
 
 
 # ─── Profile Config ───────────────────────────────────────────────────────────

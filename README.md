@@ -339,6 +339,8 @@ Even if you are rotating your IP for each running bot instance, web access firew
 
 Camoufox uses [BrowserForge](https://github.com/daijro/browserforge)'s fingerprint generator to mimic the statistical distribution of device data in real-world traffic. For example, Camoufox will make your browser look like a Linux user 5% of the time. Of that 5%, it will spoof a 2560x1440 screen resolution 9.5% of the time and an Intel HD GPU 27.5% of the time.
 
+This fork pins the default fingerprint OS to Windows for no-argument launches. Pass `os=` explicitly, pass an OS list if you want randomized selection, or set `CAMOUFOX_DEFAULT_OS` to override the default.
+
 ### How can Camoufox be detected?
 
 Camoufox can spoof fingerprints with a correct market share. However, **fingerprints must also be internally consistent.** A Windows user agent with an Apple M1 GPU, a MacOS user agent with a Windows DirectX renderer, and a mobile device with a desktop screen resolution are all impossible, and will be flagged for being suspicious.

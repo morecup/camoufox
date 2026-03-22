@@ -5,6 +5,7 @@ index 0000000000..fe74a1f432
 +++ b/dom/base/FontSpacingSeedManager.cpp
 @@ -0,0 +1,91 @@
 +#include "FontSpacingSeedManager.h"
++#include "js/Wrapper.h"
 +#include "nsPrintfCString.h"
 +#include "MaskConfig.hpp"
 +#include "nsGlobalWindowInner.h"
@@ -16,6 +17,34 @@ index 0000000000..fe74a1f432
 +
 +namespace mozilla {
 +namespace dom {
++
++static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
++                                                   JSObject* aObj) {
++  if (!aObj) {
++    return xpc::CurrentWindowOrNull(aCx);
++  }
++  if (!js::IsWrapper(aObj)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
++      return win;
++    }
++  }
++  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
++    return win;
++  }
++  if (JSObject* unwrapped =
++          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
++      return win;
++    }
++  }
++  return xpc::CurrentWindowOrNull(aCx);
++}
 +
 +/* static */ nsString
 +FontSpacingSeedManager::KeyForUserContext(uint32_t userContextId) {
@@ -78,7 +107,7 @@ index 0000000000..fe74a1f432
 +
 +/* static */ bool
 +FontSpacingSeedManager::IsFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
 +  if (!win) {
 +    return false;
 +  }

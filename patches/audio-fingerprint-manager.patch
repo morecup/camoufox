@@ -8,6 +8,7 @@ index 0000000000..f47a35b2e3
 +#include "nsTHashMap.h"  // Must come before RoverfoxStorageManager.h for template defs
 +#include "nsHashKeys.h"  // For nsStringHashKey
 +#include "RoverfoxStorageManager.h"
++#include "js/Wrapper.h"
 +#include "MaskConfig.hpp"
 +#include "nsGlobalWindowInner.h"
 +#include "xpcpublic.h"
@@ -16,6 +17,34 @@ index 0000000000..f47a35b2e3
 +
 +namespace mozilla {
 +namespace dom {
++
++static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
++                                                   JSObject* aObj) {
++  if (!aObj) {
++    return xpc::CurrentWindowOrNull(aCx);
++  }
++  if (!js::IsWrapper(aObj)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
++      return win;
++    }
++  }
++  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
++    return win;
++  }
++  if (JSObject* unwrapped =
++          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
++      return win;
++    }
++  }
++  return xpc::CurrentWindowOrNull(aCx);
++}
 +
 +/* static */ nsString
 +AudioFingerprintManager::DisabledKeyForUserContext(uint32_t userContextId) {
@@ -93,7 +122,7 @@ index 0000000000..f47a35b2e3
 +
 +/* static */ bool
 +AudioFingerprintManager::IsFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
 +  if (!win) {
 +    return false;
 +  }

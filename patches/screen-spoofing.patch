@@ -12,6 +12,7 @@ index 0000000000..1a2b3c4d5e
 +
 +#include "ScreenDimensionManager.h"
 +#include "RoverfoxStorageManager.h"
++#include "js/Wrapper.h"
 +#include "nsGlobalWindowInner.h"
 +#include "xpcpublic.h"
 +#include "mozilla/dom/BrowsingContext.h"
@@ -20,6 +21,34 @@ index 0000000000..1a2b3c4d5e
 +
 +namespace mozilla {
 +namespace dom {
++
++static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
++                                                   JSObject* aObj) {
++  if (!aObj) {
++    return xpc::CurrentWindowOrNull(aCx);
++  }
++  if (!js::IsWrapper(aObj)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
++      return win;
++    }
++  }
++  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
++    return win;
++  }
++  if (JSObject* unwrapped =
++          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
++      return win;
++    }
++  }
++  return xpc::CurrentWindowOrNull(aCx);
++}
 +
 +/* static */ uint32_t
 +ScreenDimensionManager::GetUserContextIdFromWindow(nsGlobalWindowInner* aWindow) {
@@ -91,7 +120,7 @@ index 0000000000..1a2b3c4d5e
 +
 +/* static */ bool
 +ScreenDimensionManager::IsFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
 +  if (!win) {
 +    return false;
 +  }

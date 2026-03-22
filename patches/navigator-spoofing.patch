@@ -8,14 +8,43 @@ index 0000000000..37a1713159
 +#include "NavigatorManager.h"
 +
 +#include "mozilla/dom/BrowsingContext.h"
++#include "js/Wrapper.h"
 +#include "nsGlobalWindowInner.h"
 +#include "xpcpublic.h"
 +
 +namespace mozilla {
 +namespace dom {
 +
-+static uint32_t GetUserContextId(JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
++                                                   JSObject* aObj) {
++  if (!aObj) {
++    return xpc::CurrentWindowOrNull(aCx);
++  }
++  if (!js::IsWrapper(aObj)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
++      return win;
++    }
++  }
++  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
++    return win;
++  }
++  if (JSObject* unwrapped =
++          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
++      return win;
++    }
++  }
++  return xpc::CurrentWindowOrNull(aCx);
++}
++
++static uint32_t GetUserContextId(JSContext* aCx, JSObject* aObj) {
++  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
 +  if (!win) return 0;
 +  uint32_t id = 0;
 +  if (BrowsingContext* bc = win->GetBrowsingContext()) {
@@ -35,49 +64,25 @@ index 0000000000..37a1713159
 +/* static */
 +bool NavigatorManager::IsPlatformFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                          JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
-+  if (!win) return false;
-+  uint32_t id = 0;
-+  if (BrowsingContext* bc = win->GetBrowsingContext()) {
-+    id = bc->OriginAttributesRef().mUserContextId;
-+  }
-+  return !IsDisabled("nav_plat", id);
++  return !IsDisabled("nav_plat", GetUserContextId(aCx, aObj));
 +}
 +
 +/* static */
 +bool NavigatorManager::IsOscpuFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                       JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
-+  if (!win) return false;
-+  uint32_t id = 0;
-+  if (BrowsingContext* bc = win->GetBrowsingContext()) {
-+    id = bc->OriginAttributesRef().mUserContextId;
-+  }
-+  return !IsDisabled("nav_oscpu", id);
++  return !IsDisabled("nav_oscpu", GetUserContextId(aCx, aObj));
 +}
 +
 +/* static */
 +bool NavigatorManager::IsHwcFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                     JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
-+  if (!win) return false;
-+  uint32_t id = 0;
-+  if (BrowsingContext* bc = win->GetBrowsingContext()) {
-+    id = bc->OriginAttributesRef().mUserContextId;
-+  }
-+  return !IsDisabled("nav_hwc", id);
++  return !IsDisabled("nav_hwc", GetUserContextId(aCx, aObj));
 +}
 +
 +/* static */
 +bool NavigatorManager::IsUaFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                    JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
-+  if (!win) return false;
-+  uint32_t id = 0;
-+  if (BrowsingContext* bc = win->GetBrowsingContext()) {
-+    id = bc->OriginAttributesRef().mUserContextId;
-+  }
-+  return !IsDisabled("nav_ua", id);
++  return !IsDisabled("nav_ua", GetUserContextId(aCx, aObj));
 +}
 +
 +}  // namespace dom

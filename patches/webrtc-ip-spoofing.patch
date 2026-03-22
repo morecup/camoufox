@@ -8,6 +8,7 @@ index 0000000000..94575f2631
 +#include "nsTHashMap.h"
 +#include "RoverfoxStorageManager.h"
 +#include "nsPrintfCString.h"
++#include "js/Wrapper.h"
 +#include "nsGlobalWindowInner.h"
 +#include "nsDocShell.h"
 +#include "xpcpublic.h"
@@ -17,6 +18,34 @@ index 0000000000..94575f2631
 +
 +namespace mozilla {
 +namespace dom {
++
++static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
++                                                   JSObject* aObj) {
++  if (!aObj) {
++    return xpc::CurrentWindowOrNull(aCx);
++  }
++  if (!js::IsWrapper(aObj)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
++      return win;
++    }
++  }
++  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
++    return win;
++  }
++  if (JSObject* unwrapped =
++          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
++      return win;
++    }
++  }
++  return xpc::CurrentWindowOrNull(aCx);
++}
 +
 +/* static */ nsString
 +WebRTCIPManager::IPv4KeyForUserContext(uint32_t userContextId) {
@@ -56,7 +85,10 @@ index 0000000000..94575f2631
 +WebRTCIPManager::SetIPv4(uint32_t userContextId, const nsAString& ipv4) {
 +  nsString key = IPv4KeyForUserContext(userContextId);
 +  RoverfoxStorageManager::PutString(key, ipv4);
-+  
++  if (userContextId != 0) {
++    RoverfoxStorageManager::PutString(IPv4KeyForUserContext(0), ipv4);
++  }
++
 +  // Mark the function as disabled for this context after first use
 +  DisableIPv4Function(userContextId);
 +}
@@ -64,14 +96,23 @@ index 0000000000..94575f2631
 +/* static */ bool
 +WebRTCIPManager::GetIPv4(uint32_t userContextId, nsAString& outIPv4) {
 +  nsString key = IPv4KeyForUserContext(userContextId);
-+  return RoverfoxStorageManager::GetString(key, outIPv4);
++  if (RoverfoxStorageManager::GetString(key, outIPv4)) {
++    return true;
++  }
++  if (userContextId != 0) {
++    return RoverfoxStorageManager::GetString(IPv4KeyForUserContext(0), outIPv4);
++  }
++  return false;
 +}
 +
 +/* static */ void
 +WebRTCIPManager::SetIPv6(uint32_t userContextId, const nsAString& ipv6) {
 +  nsString key = IPv6KeyForUserContext(userContextId);
 +  RoverfoxStorageManager::PutString(key, ipv6);
-+  
++  if (userContextId != 0) {
++    RoverfoxStorageManager::PutString(IPv6KeyForUserContext(0), ipv6);
++  }
++
 +  // Mark the function as disabled for this context after first use
 +  DisableIPv6Function(userContextId);
 +}
@@ -79,7 +120,13 @@ index 0000000000..94575f2631
 +/* static */ bool
 +WebRTCIPManager::GetIPv6(uint32_t userContextId, nsAString& outIPv6) {
 +  nsString key = IPv6KeyForUserContext(userContextId);
-+  return RoverfoxStorageManager::GetString(key, outIPv6);
++  if (RoverfoxStorageManager::GetString(key, outIPv6)) {
++    return true;
++  }
++  if (userContextId != 0) {
++    return RoverfoxStorageManager::GetString(IPv6KeyForUserContext(0), outIPv6);
++  }
++  return false;
 +}
 +
 +
@@ -114,7 +161,7 @@ index 0000000000..94575f2631
 +
 +/* static */ bool
 +WebRTCIPManager::IsIPv4FunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
 +  if (!win) {
 +    return false;
 +  }
@@ -131,7 +178,7 @@ index 0000000000..94575f2631
 +
 +/* static */ bool
 +WebRTCIPManager::IsIPv6FunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
 +  if (!win) {
 +    return false;
 +  }
@@ -419,10 +466,16 @@ index ca237977cd..abfc081ae7 100644
 +                    addr.Assign(NS_ConvertUTF16toUTF8(candStat.mAddress.Value()));
 +                    // Check for colons AND no periods to avoid IPv4:port false positives
 +                    bool isIPv6 = addr.FindChar(':') != kNotFound && addr.FindChar('.') == kNotFound;
-+                    if (isIPv6 && !ipv6.IsEmpty()) {
-+                      candStat.mAddress.Value() = NS_ConvertUTF8toUTF16(ipv6Utf8);
-+                    } else if (!isIPv6 && !ipv4.IsEmpty()) {
++                    if (isIPv6) {
++                      if (!ipv6.IsEmpty()) {
++                        candStat.mAddress.Value() = NS_ConvertUTF8toUTF16(ipv6Utf8);
++                      } else if (!ipv4.IsEmpty()) {
++                        candStat.mAddress.Value() = NS_ConvertUTF8toUTF16(ipv4Utf8);
++                      }
++                    } else if (!ipv4.IsEmpty()) {
 +                      candStat.mAddress.Value() = NS_ConvertUTF8toUTF16(ipv4Utf8);
++                    } else if (!ipv6.IsEmpty()) {
++                      candStat.mAddress.Value() = NS_ConvertUTF8toUTF16(ipv6Utf8);
 +                    }
 +                  }
 +                }
@@ -541,12 +594,18 @@ index ca237977cd..abfc081ae7 100644
 +  bool hasIPv6 = WebRTCIPManager::GetIPv6(userContextId, ipv6Value);
 +  
 +  if (isIPv6) {
-+    if (hasIPv6) {
++    if (hasIPv6 && !ipv6Value.IsEmpty()) {
 +      return NS_ConvertUTF16toUTF8(ipv6Value).get();
 +    }
-+  } else {
-+    if (hasIPv4) {
++    if (hasIPv4 && !ipv4Value.IsEmpty()) {
 +      return NS_ConvertUTF16toUTF8(ipv4Value).get();
++    }
++  } else {
++    if (hasIPv4 && !ipv4Value.IsEmpty()) {
++      return NS_ConvertUTF16toUTF8(ipv4Value).get();
++    }
++    if (hasIPv6 && !ipv6Value.IsEmpty()) {
++      return NS_ConvertUTF16toUTF8(ipv6Value).get();
 +    }
 +  }
 +  // return original ip if no mask is available
@@ -637,21 +696,11 @@ index ca237977cd..abfc081ae7 100644
 +      oss << line;
 +    }
 +  }
-+  // process the entire SDP for any remaining IP addresses
-+  std::string processedSdp = oss.str();
-+  std::string originalSdp = processedSdp;
-+  
-+  // ipv4
-+  const char* ipv4Pattern = "(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)";
-+  processedSdp = replaceIPAddresses(processedSdp, ipv4Pattern, userContextId);
-+  // ipv6 - comprehensive pattern handles all formats including compressed (::1, fe80::, etc.)
-+  const char* ipv6Pattern = "(?:(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,7}:|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,5}(?::[0-9A-Fa-f]{1,4}){1,2}|(?:[0-9A-Fa-f]{1,4}:){1,4}(?::[0-9A-Fa-f]{1,4}){1,3}|(?:[0-9A-Fa-f]{1,4}:){1,3}(?::[0-9A-Fa-f]{1,4}){1,4}|(?:[0-9A-Fa-f]{1,4}:){1,2}(?::[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(?::[0-9A-Fa-f]{1,4}){1,6}|:(?::[0-9A-Fa-f]{1,4}){1,7}|::)";
-+  processedSdp = replaceIPAddresses(processedSdp, ipv6Pattern, userContextId);
-+  
-+  if (processedSdp != originalSdp) {
-+    sdp = processedSdp;
-+  }
-+  
++  // Candidate/default-address paths are sanitized upstream. Avoid sweeping the
++  // entire SDP with a generic IPv6 regex here because it can corrupt
++  // non-address colon-delimited fields and make the SDP unparsable.
++  sdp = oss.str();
++
 +  return NS_OK;
  }
  

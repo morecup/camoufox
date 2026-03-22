@@ -8,12 +8,41 @@ index 0000000000..abcdef1234
 +#include "SpeechVoicesManager.h"
 +
 +#include "mozilla/dom/BrowsingContext.h"
++#include "js/Wrapper.h"
 +#include "mozilla/Mutex.h"
 +#include "nsGlobalWindowInner.h"
 +#include "xpcpublic.h"
 +
 +namespace mozilla {
 +namespace dom {
++
++static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
++                                                   JSObject* aObj) {
++  if (!aObj) {
++    return xpc::CurrentWindowOrNull(aCx);
++  }
++  if (!js::IsWrapper(aObj)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
++      return win;
++    }
++  }
++  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
++    return win;
++  }
++  if (JSObject* unwrapped =
++          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
++      return win;
++    }
++  }
++  return xpc::CurrentWindowOrNull(aCx);
++}
 +
 +static mozilla::Mutex sVoicesMutex("SpeechVoicesManager");
 +static nsTHashMap<nsUint32HashKey, nsTHashSet<nsString>> sVoicesMap;
@@ -68,7 +97,7 @@ index 0000000000..abcdef1234
 +
 +bool SpeechVoicesManager::IsFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                      JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
 +  if (!win) return false;
 +  uint32_t id = 0;
 +  if (BrowsingContext* bc = win->GetBrowsingContext()) {
