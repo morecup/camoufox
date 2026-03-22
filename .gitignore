@@ -34,6 +34,7 @@ wget-log
 
 # Python interface
 venv/
+.venv-fp/
 __pycache__/
 *.pyc
 *.mmdb
@@ -74,3 +75,4 @@ closedsrc
 node_modules/
 proxies.txt
 checks-bundle.js
+tmp/
