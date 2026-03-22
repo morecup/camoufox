@@ -13,10 +13,12 @@ or image OCR, which makes it more suitable for regression checks.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import sys
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -33,6 +35,7 @@ from camoufox.sync_api import Camoufox  # type: ignore  # noqa: E402
 ACCEPT_ENCODING = "identity"
 DEFAULT_SETTLE_MS = 12_000
 DEFAULT_TIMEOUT_MS = 90_000
+DEFAULT_RETRIES = 1
 
 BROWSERLEAKS_URLS = {
     "javascript": "https://browserleaks.com/javascript",
@@ -48,6 +51,70 @@ SANNYSOFT_URL = "https://bot.sannysoft.com/"
 
 def normalize_text(value: Optional[str]) -> str:
     return re.sub(r"\s+", " ", value or "").strip()
+
+
+def normalize_ip(value: Optional[str]) -> Optional[str]:
+    candidate = normalize_text(value)
+    if not candidate:
+        return None
+    try:
+        return str(ipaddress.ip_address(candidate))
+    except ValueError:
+        return None
+
+
+def is_public_ip(value: Optional[str]) -> bool:
+    candidate = normalize_ip(value)
+    if not candidate:
+        return False
+    return ipaddress.ip_address(candidate).is_global
+
+
+def resolve_network_profile(timeout: float = 8.0) -> Dict[str, Optional[str]]:
+    url = "http://ip-api.com/json?fields=query,timezone"
+    profile: Dict[str, Optional[str]] = {
+        "ip": None,
+        "timezone": None,
+        "source": url,
+        "error": None,
+    }
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        profile["ip"] = normalize_ip(payload.get("query"))
+        profile["timezone"] = normalize_text(payload.get("timezone")) or None
+    except Exception as exc:
+        profile["error"] = repr(exc)
+    return profile
+
+
+def build_launch_network_overrides(
+    network_profile: Dict[str, Optional[str]],
+) -> Dict[str, Any]:
+    config: Dict[str, Any] = {}
+    firefox_user_prefs: Dict[str, Any] = {}
+    timezone = normalize_text(network_profile.get("timezone")) or None
+    if timezone:
+        config["timezone"] = timezone
+    ip_value = normalize_ip(network_profile.get("ip"))
+    if not ip_value:
+        return {
+            "config": config,
+            "firefox_user_prefs": firefox_user_prefs,
+        }
+
+    parsed_ip = ipaddress.ip_address(ip_value)
+    if parsed_ip.version == 4:
+        config["webrtc:ipv4"] = ip_value
+        # Prefer IPv4-only ICE candidates when we know the public IPv4.
+        firefox_user_prefs["network.dns.disableIPv6"] = True
+    else:
+        config["webrtc:ipv6"] = ip_value
+
+    return {
+        "config": config,
+        "firefox_user_prefs": firefox_user_prefs,
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,6 +159,15 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_SETTLE_MS,
         help=(
             f"Extra wait after DOMContentLoaded in ms. Default: {DEFAULT_SETTLE_MS}."
+        ),
+    )
+    parser.add_argument(
+        "--retries",
+        type=int,
+        default=DEFAULT_RETRIES,
+        help=(
+            "Retry count for flaky external checks. "
+            f"Default: {DEFAULT_RETRIES}."
         ),
     )
     parser.add_argument(
@@ -404,10 +480,21 @@ def collect_sannysoft(page: Any, args: argparse.Namespace) -> Dict[str, Any]:
     }
 
 
-def build_summary(checks: Dict[str, Any]) -> Dict[str, Any]:
+def build_summary(
+    checks: Dict[str, Any], meta: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     positives: List[str] = []
     warnings: List[str] = []
     high_risk_findings: List[str] = []
+    network_profile = (
+        meta.get("networkProfile", {}) if isinstance(meta, dict) else {}
+    )
+    expected_ip = normalize_ip(
+        network_profile.get("ip") if isinstance(network_profile, dict) else None
+    )
+    expected_timezone = normalize_text(
+        network_profile.get("timezone") if isinstance(network_profile, dict) else None
+    )
 
     js_result = checks.get("browserleaks.javascript", {})
     if js_result.get("status") == "ok":
@@ -418,7 +505,11 @@ def build_summary(checks: Dict[str, Any]) -> Dict[str, Any]:
             positives.append(
                 f"BrowserLeaks JavaScript: Client Hints 状态为 {data['clientHintsApiStatus']}"
             )
-        if data.get("timezone") == "UTC":
+        if expected_timezone and data.get("timezone") == expected_timezone:
+            positives.append(
+                f"BrowserLeaks JavaScript: timezone 与网络画像一致 ({expected_timezone})"
+            )
+        elif data.get("timezone") == "UTC":
             warnings.append(
                 "BrowserLeaks JavaScript: timezone=UTC；若与出口 IP 地域不一致，可能增加风险。"
             )
@@ -428,10 +519,21 @@ def build_summary(checks: Dict[str, Any]) -> Dict[str, Any]:
         data = creep_result["data"]
         if data.get("headless") == "0%" and data.get("likeHeadless") == "0%":
             positives.append("CreepJS: headless/like headless 均为 0%")
-        if data.get("webrtcCandidateIp"):
-            high_risk_findings.append(
-                f"CreepJS: 检测到 WebRTC candidate IP 泄露 -> {data['webrtcCandidateIp']}"
+        candidate_ip = normalize_ip(data.get("webrtcCandidateIp"))
+        if candidate_ip and expected_ip and candidate_ip == expected_ip:
+            positives.append(
+                f"CreepJS: WebRTC candidate 与出口 IP 一致 ({candidate_ip})"
             )
+        elif candidate_ip and is_public_ip(candidate_ip):
+            warnings.append(
+                f"CreepJS: 检测到公网 WebRTC candidate -> {candidate_ip}"
+            )
+        elif candidate_ip:
+            high_risk_findings.append(
+                f"CreepJS: 检测到 WebRTC candidate IP 泄露 -> {candidate_ip}"
+            )
+        elif expected_ip:
+            positives.append("CreepJS: 未发现额外 WebRTC candidate")
 
     sanny_result = checks.get("sannysoft", {})
     if sanny_result.get("status") == "ok":
@@ -465,30 +567,48 @@ def run_check(
     collector: Callable[[Any, argparse.Namespace], Dict[str, Any]],
     args: argparse.Namespace,
 ) -> Dict[str, Any]:
-    print(f"[RUN ] {name}", flush=True)
-    started = time.time()
-    try:
-        data = collector(page, args)
-        duration_ms = int((time.time() - started) * 1000)
-        print(f"[ OK ] {name} ({duration_ms} ms)", flush=True)
-        return {
-            "status": "ok",
-            "durationMs": duration_ms,
-            "data": data,
-        }
-    except Exception as exc:
-        duration_ms = int((time.time() - started) * 1000)
-        print(f"[ERR ] {name} ({duration_ms} ms): {exc}", flush=True)
-        return {
-            "status": "error",
-            "durationMs": duration_ms,
-            "error": repr(exc),
-        }
+    attempts = max(args.retries, 0) + 1
+    last_exc: Optional[Exception] = None
+    total_started = time.time()
+
+    for attempt in range(1, attempts + 1):
+        prefix = f"[RUN ] {name}"
+        if attempts > 1:
+            prefix += f" (attempt {attempt}/{attempts})"
+        print(prefix, flush=True)
+        started = time.time()
+        try:
+            data = collector(page, args)
+            duration_ms = int((time.time() - started) * 1000)
+            total_duration_ms = int((time.time() - total_started) * 1000)
+            print(f"[ OK ] {name} ({duration_ms} ms)", flush=True)
+            return {
+                "status": "ok",
+                "durationMs": total_duration_ms,
+                "attempts": attempt,
+                "data": data,
+            }
+        except Exception as exc:
+            last_exc = exc
+            duration_ms = int((time.time() - started) * 1000)
+            print(f"[ERR ] {name} ({duration_ms} ms): {exc}", flush=True)
+            if attempt < attempts:
+                print(f"[RETRY] {name} -> retrying after transient failure", flush=True)
+                page.wait_for_timeout(1_500)
+
+    total_duration_ms = int((time.time() - total_started) * 1000)
+    return {
+        "status": "error",
+        "durationMs": total_duration_ms,
+        "attempts": attempts,
+        "error": repr(last_exc),
+    }
 
 
 def main() -> int:
     args = parse_args()
     output_path = resolve_output_path(args.output)
+    network_profile = resolve_network_profile()
 
     executable_path = (
         Path(args.executable_path)
@@ -506,6 +626,13 @@ def main() -> int:
     }
     if executable_path:
         launch_kwargs["executable_path"] = str(executable_path)
+    network_overrides = build_launch_network_overrides(network_profile)
+    if network_overrides["config"]:
+        launch_kwargs["config"] = network_overrides["config"]
+    if network_overrides["firefox_user_prefs"]:
+        launch_kwargs["firefox_user_prefs"] = network_overrides["firefox_user_prefs"]
+    if network_overrides["config"]:
+        launch_kwargs["i_know_what_im_doing"] = True
 
     report: Dict[str, Any] = {
         "meta": {
@@ -517,6 +644,7 @@ def main() -> int:
             "settleMs": args.settle_ms,
             "executablePath": str(executable_path) if executable_path else None,
             "excludeDefaultAddons": not args.include_default_addons,
+            "networkProfile": network_profile,
         },
         "checks": {},
         "summary": {},
@@ -548,7 +676,7 @@ def main() -> int:
             "sannysoft", page, collect_sannysoft, args
         )
 
-    report["summary"] = build_summary(report["checks"])
+    report["summary"] = build_summary(report["checks"], report["meta"])
 
     output_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2),
