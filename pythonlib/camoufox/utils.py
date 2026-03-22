@@ -1,5 +1,8 @@
+import hashlib
 import os
+import shutil
 import sys
+import tempfile
 from os import environ
 from os.path import abspath
 from pathlib import Path
@@ -24,12 +27,13 @@ from .fingerprints import DEFAULT_FINGERPRINT_OS, from_browserforge, from_preset
 from .geolocation import geoip_allowed, get_geolocation
 from .ip import Proxy, public_ip, valid_ipv4, valid_ipv6
 from .locales import handle_locales
-from .pkgman import OS_NAME, get_path, installed_verstr, launch_path
+from .pkgman import LOCAL_DATA, OS_NAME, camoufox_path, get_path, installed_verstr, launch_path
 from .virtdisplay import VirtualDisplay
 from ._warnings import LeakWarning
 from .webgl import sample_webgl
 
 ListOrString: TypeAlias = Union[Tuple[str, ...], List[str], str]
+_RUNTIME_FONTCONFIG_CACHE: Dict[str, str] = {}
 
 # Camoufox preferences to cache previous pages and requests
 CACHE_PREFS = {
@@ -68,25 +72,177 @@ def get_env_vars(
             sys.exit(1)
 
     if OS_NAME == 'lin':
-        # https://github.com/coryking/camoufox/commit/f21eeb2850a74cc104fb57e17e0a2fa27b7a2a28
-        # Thanks @coryking
-        # the user_agent_os is either 'lin', 'mac', or 'win' but our fontconfigs directory is 'linux', 'macos', or 'windows'
-        directory_map = {
-            'lin': 'linux',
-            'mac': 'macos',
-            'win': 'windows',
-        }
-        os_dir = directory_map.get(user_agent_os, user_agent_os)
-        fontconfig_path = get_path(os.path.join("fontconfigs", os_dir))
-
-        # assert that fonts.conf exists in the directory
-        if not os.path.exists(os.path.join(fontconfig_path, "fonts.conf")):
-            # puke violently if fonts.conf doesn't exist!!
-            raise FileNotFoundError(
-                f"fonts.conf not found in {fontconfig_path}!  Something ain't right with your camoufox bundle."
-            )
+        runtime_home_dir = Path(_create_runtime_fontconfig(user_agent_os))
+        runtime_config_dir = runtime_home_dir / '.config' / 'fontconfig'
+        runtime_data_dir = runtime_home_dir / '.local' / 'share'
+        runtime_cache_dir = runtime_home_dir / '.cache'
+        env_vars['HOME'] = str(runtime_home_dir)
+        env_vars['XDG_CONFIG_HOME'] = str(runtime_home_dir / '.config')
+        env_vars['XDG_DATA_HOME'] = str(runtime_data_dir)
+        env_vars['XDG_CACHE_HOME'] = str(runtime_cache_dir)
+        env_vars['FONTCONFIG_PATH'] = str(runtime_config_dir)
+        env_vars['FONTCONFIG_FILE'] = str(runtime_config_dir / 'fonts.conf')
 
     return env_vars
+
+
+def _resolve_font_asset_paths(user_agent_os: str) -> Tuple[Path, Path]:
+    """
+    Resolve the best available fontconfig + fonts directory for the requested OS.
+    Supports both installed-package layouts and source-tree bundle layouts.
+    """
+    directory_map = {
+        'lin': 'linux',
+        'mac': 'macos',
+        'win': 'windows',
+    }
+    os_dir = directory_map.get(user_agent_os, user_agent_os)
+
+    search_roots: List[Path] = []
+
+    repo_root = LOCAL_DATA.parents[1]
+    bundle_root = repo_root / 'bundle'
+    if bundle_root.exists():
+        search_roots.append(bundle_root)
+
+    try:
+        search_roots.append(Path(camoufox_path()))
+    except Exception:
+        pass
+
+    candidates: List[Tuple[Path, Path]] = []
+    for root in search_roots:
+        candidates.extend(
+            [
+                (root / 'fontconfig' / os_dir, root / 'fonts' / os_dir),
+                (root / 'fontconfigs' / os_dir, root / 'fonts' / os_dir),
+                (root / 'fontconfigs' / os_dir, root / 'fonts'),
+                (root / 'fontconfig' / os_dir, root / 'fonts'),
+            ]
+        )
+
+    for fontconfig_dir, fonts_dir in candidates:
+        if not (fontconfig_dir / 'fonts.conf').exists():
+            continue
+        if not fonts_dir.exists():
+            continue
+        return fontconfig_dir, fonts_dir
+
+    raise FileNotFoundError(
+        f"Unable to resolve font assets for target OS '{os_dir}'. Checked: "
+        + ", ".join(f"{cfg} -> {fonts}" for cfg, fonts in candidates)
+    )
+
+
+def _create_runtime_fontconfig(user_agent_os: str) -> str:
+    """
+    Create a runtime fontconfig directory with absolute font paths.
+    """
+    fontconfig_dir, fonts_dir = _resolve_font_asset_paths(user_agent_os)
+    cache_key = f"{fontconfig_dir}|{fonts_dir}"
+    cached = _RUNTIME_FONTCONFIG_CACHE.get(cache_key)
+    if cached and _is_runtime_fontconfig_ready(Path(cached)):
+        return cached
+
+    runtime_dir = _materialize_runtime_font_assets(
+        fontconfig_dir=fontconfig_dir,
+        fonts_dir=fonts_dir,
+        user_agent_os=user_agent_os,
+    )
+    _RUNTIME_FONTCONFIG_CACHE[cache_key] = str(runtime_dir)
+    return str(runtime_dir)
+
+
+def _is_runtime_fontconfig_ready(runtime_dir: Path) -> bool:
+    fonts_dir = runtime_dir / '.local' / 'share' / 'fonts'
+    runtime_file = runtime_dir / '.config' / 'fontconfig' / 'fonts.conf'
+    if not runtime_file.exists():
+        return False
+    if not fonts_dir.is_dir():
+        return False
+    expected_dir_line = f'<dir>{fonts_dir.as_posix()}</dir>'
+    try:
+        content = runtime_file.read_text(encoding='utf-8')
+    except OSError:
+        return False
+    if expected_dir_line not in content:
+        return False
+    try:
+        next(fonts_dir.rglob('*'))
+    except StopIteration:
+        return False
+    return True
+
+
+def _populate_runtime_fonts(source_dir: Path, target_dir: Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir.chmod(0o755)
+
+    for source_path in source_dir.rglob('*'):
+        relative = source_path.relative_to(source_dir)
+        target_path = target_dir / relative
+        if source_path.is_dir():
+            target_path.mkdir(parents=True, exist_ok=True)
+            target_path.chmod(0o755)
+            continue
+
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.parent.chmod(0o755)
+        try:
+            os.link(source_path, target_path)
+        except OSError:
+            shutil.copy2(source_path, target_path)
+        target_path.chmod(0o644)
+
+
+def _materialize_runtime_font_assets(
+    fontconfig_dir: Path, fonts_dir: Path, user_agent_os: str
+) -> Path:
+    stable_key = hashlib.sha256(
+        f'{fontconfig_dir}|{fonts_dir}|{user_agent_os}'.encode('utf-8')
+    ).hexdigest()[:16]
+    runtime_dir = Path(tempfile.gettempdir()) / (
+        f'camoufox-font-home-{user_agent_os}-{stable_key}'
+    )
+    if _is_runtime_fontconfig_ready(runtime_dir):
+        return runtime_dir
+
+    if runtime_dir.exists():
+        shutil.rmtree(runtime_dir, ignore_errors=True)
+
+    stage_dir = Path(tempfile.mkdtemp(prefix=f'camoufox-font-home-{user_agent_os}-'))
+    stage_dir.chmod(0o755)
+    try:
+        runtime_fonts_dir = stage_dir / '.local' / 'share' / 'fonts'
+        runtime_config_dir = stage_dir / '.config' / 'fontconfig'
+        runtime_cache_dir = stage_dir / '.cache' / 'fontconfig'
+        runtime_config_dir.mkdir(parents=True, exist_ok=True)
+        runtime_config_dir.chmod(0o755)
+        runtime_cache_dir.mkdir(parents=True, exist_ok=True)
+        runtime_cache_dir.chmod(0o755)
+        _populate_runtime_fonts(fonts_dir, runtime_fonts_dir)
+        final_fonts_dir = runtime_dir / '.local' / 'share' / 'fonts'
+
+        src = fontconfig_dir / 'fonts.conf'
+        content = src.read_text(encoding='utf-8')
+        content = content.replace(
+            '<dir prefix="cwd">fonts</dir>',
+            f'<dir>{final_fonts_dir.as_posix()}</dir>',
+        )
+
+        runtime_file = runtime_config_dir / 'fonts.conf'
+        runtime_file.write_text(content, encoding='utf-8')
+        runtime_file.chmod(0o644)
+
+        try:
+            stage_dir.replace(runtime_dir)
+        except FileExistsError:
+            shutil.rmtree(stage_dir, ignore_errors=True)
+        runtime_dir.chmod(0o755)
+        return runtime_dir
+    except Exception:
+        shutil.rmtree(stage_dir, ignore_errors=True)
+        raise
 
 
 def _load_properties(path: Optional[Path] = None) -> Dict[str, str]:
@@ -699,10 +855,21 @@ def launch_options(
     validate_config(config, path=executable_path)
 
     # Prepare environment variables to pass to Camoufox
+    runtime_env_vars = get_env_vars(config, target_os)
     env_vars = {
-        **get_env_vars(config, target_os),
+        **runtime_env_vars,
         **env,
     }
+    for key in (
+        'HOME',
+        'XDG_CONFIG_HOME',
+        'XDG_DATA_HOME',
+        'XDG_CACHE_HOME',
+        'FONTCONFIG_PATH',
+        'FONTCONFIG_FILE',
+    ):
+        if key in runtime_env_vars:
+            env_vars[key] = runtime_env_vars[key]
     # Prepare the executable path
     if executable_path:
         executable_path = str(executable_path)
