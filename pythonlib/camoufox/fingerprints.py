@@ -460,7 +460,7 @@ def _build_init_script(values: Dict[str, Any]) -> str:
 
     # Speech voices (comma-separated)
     voices = values.get('speechVoices')
-    if voices and len(voices) > 0:
+    if voices is not None:
         joined = ','.join(voices)
         lines.append(
             f'  if (typeof w.setSpeechVoices === "function") w.setSpeechVoices({_json.dumps(joined)});'

@@ -16,7 +16,7 @@ from typing_extensions import Literal
 from camoufox.virtdisplay import VirtualDisplay
 
 from .fingerprints import generate_context_fingerprint
-from .utils import async_attach_vd, launch_options
+from .utils import async_attach_vd, infer_ff_version, launch_options
 
 
 def _extract_launch_config(from_options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -76,6 +76,11 @@ def _extract_context_defaults(
     ff_version = launch_kwargs.get("ff_version")
     if ff_version is not None:
         defaults["ff_version"] = str(ff_version)
+    else:
+        defaults["ff_version"] = infer_ff_version(
+            executable_path=launch_kwargs.get("executable_path"),
+            browser=launch_kwargs.get("browser") if isinstance(launch_kwargs.get("browser"), str) else None,
+        )
 
     webrtc_ipv4 = config.get("webrtc:ipv4")
     if isinstance(webrtc_ipv4, str) and webrtc_ipv4:

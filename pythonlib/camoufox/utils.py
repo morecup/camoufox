@@ -27,7 +27,7 @@ from .fingerprints import DEFAULT_FINGERPRINT_OS, from_browserforge, from_preset
 from .geolocation import geoip_allowed, get_geolocation
 from .ip import Proxy, public_ip, valid_ipv4, valid_ipv6
 from .locales import handle_locales
-from .pkgman import LOCAL_DATA, OS_NAME, camoufox_path, get_path, installed_verstr, launch_path
+from .pkgman import LOCAL_DATA, OS_NAME, Version, camoufox_path, get_path, installed_verstr, launch_path
 from .virtdisplay import VirtualDisplay
 from ._warnings import LeakWarning
 from .webgl import sample_webgl
@@ -323,6 +323,80 @@ def determine_ua_os(user_agent: str) -> Literal['mac', 'win', 'lin']:
     if parsed_ua.startswith("Windows"):
         return "win"
     return "lin"
+
+
+def _major_ff_version(version_string: Optional[str]) -> Optional[str]:
+    """
+    Extract the Firefox major version from a version string like "146.0.1".
+    """
+    if not version_string:
+        return None
+    major = version_string.split('.', 1)[0].strip()
+    return major or None
+
+
+def _find_version_root_from_executable(
+    executable_path: Optional[Union[str, Path]]
+) -> Optional[Path]:
+    """
+    Walk upward from a custom executable path until a directory containing
+    version.json is found.
+    """
+    if not executable_path:
+        return None
+
+    try:
+        path = Path(executable_path).expanduser()
+    except TypeError:
+        return None
+
+    candidates: List[Path] = []
+    if path.is_dir():
+        candidates.append(path)
+    candidates.extend(path.parents)
+
+    for candidate in candidates:
+        if (candidate / 'version.json').exists():
+            return candidate
+    return None
+
+
+def infer_ff_version(
+    executable_path: Optional[Union[str, Path]] = None,
+    browser: Optional[str] = None,
+) -> str:
+    """
+    Infer the Firefox major version that should be exposed in fingerprints.
+
+    Priority:
+      1. version.json near a custom executable_path
+      2. version.json for a selected installed browser specifier
+      3. the active installed Camoufox version
+    """
+    version_root = _find_version_root_from_executable(executable_path)
+    if version_root is not None:
+        try:
+            version = Version.from_path(version_root)
+            major = _major_ff_version(version.version) or _major_ff_version(version.full_string)
+            if major:
+                return major
+        except Exception:
+            pass
+
+    if browser:
+        try:
+            from .multiversion import find_installed_version
+
+            browser_path = find_installed_version(browser)
+            if browser_path is not None:
+                version = Version.from_path(browser_path)
+                major = _major_ff_version(version.version) or _major_ff_version(version.full_string)
+                if major:
+                    return major
+        except Exception:
+            pass
+
+    return installed_verstr().split('.', 1)[0]
 
 
 def get_screen_cons(headless: Optional[bool] = None) -> Optional[Screen]:
@@ -692,7 +766,10 @@ def launch_options(
         ff_version_str = str(ff_version)
         LeakWarning.warn('ff_version', i_know_what_im_doing)
     else:
-        ff_version_str = installed_verstr().split('.', 1)[0]
+        ff_version_str = infer_ff_version(
+            executable_path=executable_path,
+            browser=browser,
+        )
 
     # Generate a fingerprint
     _used_preset = False
