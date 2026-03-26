@@ -8,7 +8,6 @@ index 0000000000..abcdef1234
 +#include "CanvasFingerprintManager.h"
 +
 +#include <algorithm>
-+#include "js/Wrapper.h"
 +#include "MaskConfig.hpp"
 +#include "mozilla/dom/BrowsingContext.h"
 +#include "nsGlobalWindowInner.h"
@@ -16,34 +15,6 @@ index 0000000000..abcdef1234
 +
 +namespace mozilla {
 +namespace dom {
-+
-+static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
-+                                                   JSObject* aObj) {
-+  if (!aObj) {
-+    return xpc::CurrentWindowOrNull(aCx);
-+  }
-+  if (!js::IsWrapper(aObj)) {
-+    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
-+      return win;
-+    }
-+    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
-+      return win;
-+    }
-+  }
-+  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
-+    return win;
-+  }
-+  if (JSObject* unwrapped =
-+          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
-+    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
-+      return win;
-+    }
-+    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
-+      return win;
-+    }
-+  }
-+  return xpc::CurrentWindowOrNull(aCx);
-+}
 +
 +nsString CanvasFingerprintManager::DisabledKeyForUserContext(uint32_t aId) {
 +  nsAutoString key;
@@ -72,29 +43,20 @@ index 0000000000..abcdef1234
 +}
 +
 +void CanvasFingerprintManager::ApplyCanvasNoise(uint8_t* data, uint32_t length,
-+                                                 uint32_t seed,
-+                                                 bool aBytesAreBGRA) {
++                                                 uint32_t seed) {
 +  if (seed == 0 || length == 0 || !data) return;
-+  const uint32_t channelOrder[3] = {
-+      aBytesAreBGRA ? 2u : 0u,
-+      1u,
-+      aBytesAreBGRA ? 0u : 2u,
-+  };
 +  uint32_t state = seed;
 +  for (uint32_t i = 0; i + 3 < length; i += 4) {
 +    state = (state * 1664525u + 1013904223u);
 +    if (state & 0x100) {
-+      // Iterate channels in logical RGB order rather than storage order.
-+      // GetImageData() exposes RGBA while GetImageBuffer()/toDataURL() use
-+      // BGRA storage, and both APIs must perturb the same logical color
-+      // component to avoid method-specific canvas fingerprints. Skipping zero
-+      // channels preserves clearRect transparency and avoids the CreepJS
-+      // post-clear trap.
++      // Iterate RGB channels (skip alpha at i+3) to find first non-zero.
++      // This is format-agnostic: works for both RGBA (getImageData) and
++      // BGRA (GetImageBuffer/toDataURL). Skipping zero channels preserves
++      // clearRect transparency and avoids the CreepJS post-clear trap.
 +      for (uint32_t c = 0; c < 3; c++) {
-+        uint32_t channelIndex = i + channelOrder[c];
-+        int32_t val = static_cast<int32_t>(data[channelIndex]);
++        int32_t val = static_cast<int32_t>(data[i + c]);
 +        if (val == 0) continue;
-+        data[channelIndex] = static_cast<uint8_t>(
++        data[i + c] = static_cast<uint8_t>(
 +            (state & 0x200) ? std::min(val + 1, 255) : std::max(val - 1, 0));
 +        break;  // Only modify one channel per pixel
 +      }
@@ -108,7 +70,7 @@ index 0000000000..abcdef1234
 +
 +bool CanvasFingerprintManager::IsFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                           JSObject* aObj) {
-+  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
++  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
 +  if (!win) return false;
 +  uint32_t id = 0;
 +  if (BrowsingContext* bc = win->GetBrowsingContext()) {
@@ -143,8 +105,7 @@ index 0000000000..bcdef12345
 + public:
 +  static void SetSeed(uint32_t aUserContextId, uint32_t aSeed);
 +  static uint32_t GetSeed(uint32_t aUserContextId);
-+  static void ApplyCanvasNoise(uint8_t* data, uint32_t length, uint32_t seed,
-+                               bool aBytesAreBGRA);
++  static void ApplyCanvasNoise(uint8_t* data, uint32_t length, uint32_t seed);
 +  static void DisableFunction(uint32_t aId);
 +  static bool IsFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj);
 + private:
@@ -279,7 +240,7 @@ index xxxxxxxxxx..yyyyyyyyyy 100644
 +    if (canvasSeed != 0) {
 +      CanvasFingerprintManager::ApplyCanvasNoise(
 +          ret.get(), out_imageSize->width * out_imageSize->height * 4,
-+          canvasSeed, true);
++          canvasSeed);
 +    }
 +  }
 +
@@ -316,7 +277,7 @@ index xxxxxxxxxx..yyyyyyyyyy 100644
 +      uint8_t* pixelData =
 +          JS_GetUint8ClampedArrayData(darray, &isShared2, nogc2);
 +      CanvasFingerprintManager::ApplyCanvasNoise(pixelData, len.value(),
-+                                                 canvasSeed, false);
++                                                  canvasSeed);
 +    }
 +  }
 +

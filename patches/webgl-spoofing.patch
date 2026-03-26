@@ -8,40 +8,11 @@ index 0000000000..abcdef1234
 +#include "WebGLParamsManager.h"
 +
 +#include "mozilla/dom/BrowsingContext.h"
-+#include "js/Wrapper.h"
 +#include "nsGlobalWindowInner.h"
 +#include "xpcpublic.h"
 +
 +namespace mozilla {
 +namespace dom {
-+
-+static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
-+                                                   JSObject* aObj) {
-+  if (!aObj) {
-+    return xpc::CurrentWindowOrNull(aCx);
-+  }
-+  if (!js::IsWrapper(aObj)) {
-+    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
-+      return win;
-+    }
-+    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
-+      return win;
-+    }
-+  }
-+  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
-+    return win;
-+  }
-+  if (JSObject* unwrapped =
-+          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
-+    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
-+      return win;
-+    }
-+    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
-+      return win;
-+    }
-+  }
-+  return xpc::CurrentWindowOrNull(aCx);
-+}
 +
 +nsString WebGLParamsManager::VendorDisabledKey(uint32_t aId) {
 +  nsAutoString key;
@@ -89,7 +60,7 @@ index 0000000000..abcdef1234
 +
 +bool WebGLParamsManager::IsVendorFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                           JSObject* aObj) {
-+  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
++  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
 +  if (!win) return false;
 +  uint32_t id = 0;
 +  if (BrowsingContext* bc = win->GetBrowsingContext()) {
@@ -102,7 +73,7 @@ index 0000000000..abcdef1234
 +
 +bool WebGLParamsManager::IsRendererFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                             JSObject* aObj) {
-+  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
++  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
 +  if (!win) return false;
 +  uint32_t id = 0;
 +  if (BrowsingContext* bc = win->GetBrowsingContext()) {
@@ -712,42 +683,5 @@ index xxxxxxxxxx..yyyyyyyyyy 100644
 +};
 +
  dictionary WindowPostMessageOptions : StructuredSerializeOptions {
-  USVString targetOrigin = "/";
+   USVString targetOrigin = "/";
  };
-diff --git a/gfx/gl/GLContextProviderLinux.cpp b/gfx/gl/GLContextProviderLinux.cpp
-index xxxxxxxxxx..yyyyyyyyyy 100644
---- a/gfx/gl/GLContextProviderLinux.cpp
-+++ b/gfx/gl/GLContextProviderLinux.cpp
-@@ -35,14 +35,25 @@ already_AddRefed<GLContext> GLContextProviderLinux::CreateHeadless(
-     const GLContextCreateDesc& desc, nsACString* const out_failureId) {
--  if (gfxVars::UseEGL() ||
--      bool(desc.flags & CreateContextFlags::FORBID_HARDWARE)) {
--    // We request EGL if software is required, because we don't know
--    // what X11 is using. It could be software or hardware.
--    return sGLContextProviderEGL.CreateHeadless(desc, out_failureId);
-+  const bool forceEGL = gfxVars::UseEGL() || PR_GetEnv("MOZ_WEBGL_FORCE_EGL");
-+  const bool requireSoftware =
-+      bool(desc.flags & CreateContextFlags::FORBID_HARDWARE);
-+  const bool preferEGL = forceEGL || requireSoftware || PR_GetEnv("MOZ_HEADLESS");
-+
-+  if (preferEGL) {
-+    // Headless Linux runs are more reliable on EGL. Keep GLX as a fallback only
-+    // when EGL was preferred heuristically rather than strictly required.
-+    if (auto gl = sGLContextProviderEGL.CreateHeadless(desc, out_failureId)) {
-+      return gl;
-+    }
-+    if (forceEGL || requireSoftware) {
-+      return nullptr;
-+    }
- #ifdef MOZ_X11
--  } else {
--    return sGLContextProviderGLX.CreateHeadless(desc, out_failureId);
--#endif
-   }
-+#endif
-+#ifdef MOZ_X11
-+  return sGLContextProviderGLX.CreateHeadless(desc, out_failureId);
-+#else
-+  return nullptr;
-+#endif
- }

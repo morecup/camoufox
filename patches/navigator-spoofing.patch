@@ -3,7 +3,7 @@ new file mode 100644
 index 0000000000..37a1713159
 --- /dev/null
 +++ b/dom/base/NavigatorManager.cpp
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,83 @@
 +/* Camoufox: Per-context navigator property manager */
 +#include "NavigatorManager.h"
 +
@@ -92,7 +92,7 @@ new file mode 100644
 index 0000000000..918d94be04
 --- /dev/null
 +++ b/dom/base/NavigatorManager.h
-@@ -0,0 +1,102 @@
+@@ -0,0 +1,97 @@
 +/* Camoufox: Per-context navigator property manager */
 +#ifndef mozilla_dom_NavigatorManager_h
 +#define mozilla_dom_NavigatorManager_h
@@ -170,14 +170,9 @@ index 0000000000..918d94be04
 +  static void SetUserAgent(uint32_t aId, const nsAString& aValue) {
 +    nsAutoString key;
 +    key.AppendPrintf("nav_ua_%u", aId);
++    RoverfoxStorageManager::PutString(key, aValue);
 +    nsAutoString dKey;
 +    dKey.AppendPrintf("nav_ua_d_%u", aId);
-+    if (aValue.IsEmpty()) {
-+      RoverfoxStorageManager::Remove(key);
-+      RoverfoxStorageManager::Remove(dKey);
-+      return;
-+    }
-+    RoverfoxStorageManager::PutString(key, aValue);
 +    RoverfoxStorageManager::PutBool(dKey, true);
 +  }
 +
@@ -247,26 +242,10 @@ index 318d2edba8..12feb91573 100644
    nsCOMPtr<nsPIDOMWindowInner> window;
 
    if (mWindow) {
-@@ -308,6 +336,27 @@ void Navigator::GetAppCodeName(nsAString& aAppCodeName, ErrorResult& aRv) {
+@@ -308,6 +336,11 @@ void Navigator::GetAppCodeName(nsAString& aAppCodeName, ErrorResult& aRv) {
  
  void Navigator::GetAppVersion(nsAString& aAppVersion, CallerType aCallerType,
                                ErrorResult& aRv) const {
-+  // Camoufox: per-context appVersion derived from user agent override
-+  if (mWindow) {
-+    uint32_t userContextId = 0;
-+    if (BrowsingContext* bc = mWindow->GetBrowsingContext()) {
-+      userContextId = bc->OriginAttributesRef().mUserContextId;
-+    }
-+    nsAutoString stored;
-+    if (NavigatorManager::GetUserAgent(userContextId, stored)) {
-+      if (StringBeginsWith(stored, u"Mozilla/"_ns)) {
-+        aAppVersion.Assign(Substring(stored, 8));
-+      } else {
-+        aAppVersion = stored;
-+      }
-+      return;
-+    }
-+  }
 +  // Camoufox: global config fallback for appVersion
 +  if (auto value = MaskConfig::GetString("navigator.appVersion")) {
 +    aAppVersion.Assign(NS_ConvertUTF8toUTF16(value.value()));
@@ -542,26 +521,10 @@ index c9a65ff013..d8268dd9ce 100644
  
  #include <utility>
  
-@@ -153,6 +155,34 @@ void WorkerNavigator::GetAppVersion(nsString& aAppVersion,
-+  // Camoufox: per-context appVersion for workers derived from user agent
-+  {
-+    WorkerPrivate* wp = GetCurrentThreadWorkerPrivate();
-+    if (wp) {
-+      uint32_t ucid = wp->GetOriginAttributes().mUserContextId;
-+      nsAutoString stored;
-+      if (mozilla::dom::NavigatorManager::GetUserAgent(ucid, stored)) {
-+        if (StringBeginsWith(stored, u"Mozilla/"_ns)) {
-+          aAppVersion.Assign(Substring(stored, 8));
-+        } else {
-+          aAppVersion = stored;
-+        }
-+        return;
-+      }
-+    }
-+  }
+@@ -153,6 +155,18 @@ void WorkerNavigator::GetAppVersion(nsString& aAppVersion,
  
  void WorkerNavigator::GetPlatform(nsString& aPlatform, CallerType aCallerType,
-                                    ErrorResult& aRv) const {
+                                   ErrorResult& aRv) const {
 +  // Camoufox: per-context navigator platform for workers
 +  {
 +    WorkerPrivate* wp = GetCurrentThreadWorkerPrivate();

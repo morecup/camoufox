@@ -1,5 +1,5 @@
 diff --git a/gfx/thebes/gfxPlatformFontList.cpp b/gfx/thebes/gfxPlatformFontList.cpp
-index fb6157b..f921723 100644
+index bc0e123f85..52ec46f76b 100644
 --- a/gfx/thebes/gfxPlatformFontList.cpp
 +++ b/gfx/thebes/gfxPlatformFontList.cpp
 @@ -13,6 +13,7 @@
@@ -10,7 +10,7 @@ index fb6157b..f921723 100644
  
  #include "GeckoProfiler.h"
  #include "nsCRT.h"
-@@ -308,6 +309,16 @@ gfxPlatformFontList::gfxPlatformFontList(bool aNeedFullnamePostscriptNames)
+@@ -303,6 +304,16 @@ gfxPlatformFontList::gfxPlatformFontList(bool aNeedFullnamePostscriptNames)
  
    mFontPrefs = MakeUnique<FontPrefs>();
  
@@ -27,126 +27,23 @@ index fb6157b..f921723 100644
    gfxFontUtils::GetPrefsFontList(kFontSystemWhitelistPref, mEnabledFontsList);
    mFontFamilyWhitelistActive = !mEnabledFontsList.IsEmpty();
  
-@@ -684,6 +695,102 @@ bool gfxPlatformFontList::InitFontList() {
-         SharedFontList()->SetLocalNames(mLocalNameTable);
-         mLocalNameTable.Clear();
-       }
-+      if (XRE_IsParentProcess()) {
-+        static const char* const kSansTargets[] = {
-+            "liberation sans",
-+            "noto sans",
-+            "dejavu sans",
-+            "noto sans cjk sc",
-+        };
-+        static const char* const kSerifTargets[] = {
-+            "liberation serif",
-+            "noto serif",
-+            "dejavu serif",
-+        };
-+        static const char* const kMonoTargets[] = {
-+            "liberation mono",
-+            "dejavu sans mono",
-+        };
-+        static const char* const kCjkSansTargets[] = {
-+            "noto sans cjk sc",
-+            "noto sans",
-+            "liberation sans",
-+            "dejavu sans",
-+        };
-+        auto addSyntheticAlias = [&](const char* aAlias,
-+                                     const char* const* aTargets,
-+                                     size_t aTargetCount) {
-+          nsAutoCString aliasKey(aAlias);
-+          GenerateFontListKey(aliasKey);
-+          if (SharedFontList()->FindFamily(aliasKey) || mAliasTable.Get(aliasKey)) {
-+            return;
-+          }
-+          fontlist::Family* baseFamily = nullptr;
-+          nsAutoCString baseKey;
-+          for (size_t i = 0; i < aTargetCount; ++i) {
-+            baseKey.Assign(aTargets[i]);
-+            GenerateFontListKey(baseKey);
-+            baseFamily = SharedFontList()->FindFamily(baseKey, true);
-+            if (baseFamily) {
-+              break;
-+            }
-+          }
-+          if (!baseFamily) {
-+            return;
-+          }
-+          if (!baseFamily->IsInitialized() && !InitializeFamily(baseFamily)) {
-+            return;
-+          }
-+          auto aliasData = mAliasTable.GetOrInsertNew(aliasKey);
-+          aliasData->InitFromFamily(baseFamily, baseKey);
-+          if (auto* faces = baseFamily->Faces(SharedFontList())) {
-+            for (uint32_t i = 0; i < baseFamily->NumFaces(); ++i) {
-+              aliasData->mFaces.AppendElement(faces[i]);
-+            }
-+          }
-+        };
-+
-+        // Seed common browser-spoofed families up front so querying them does
-+        // not trigger deferred alias loading that mutates metrics mid-session.
-+        addSyntheticAlias("arial", kSansTargets,
-+                          sizeof(kSansTargets) / sizeof(kSansTargets[0]));
-+        addSyntheticAlias("helvetica", kSansTargets,
-+                          sizeof(kSansTargets) / sizeof(kSansTargets[0]));
-+        addSyntheticAlias("helvetica neue", kSansTargets,
-+                          sizeof(kSansTargets) / sizeof(kSansTargets[0]));
-+        addSyntheticAlias("geneva", kSansTargets,
-+                          sizeof(kSansTargets) / sizeof(kSansTargets[0]));
-+        addSyntheticAlias("menlo", kMonoTargets,
-+                          sizeof(kMonoTargets) / sizeof(kMonoTargets[0]));
-+        addSyntheticAlias("monaco", kMonoTargets,
-+                          sizeof(kMonoTargets) / sizeof(kMonoTargets[0]));
-+        addSyntheticAlias("pingfang hk", kCjkSansTargets,
-+                          sizeof(kCjkSansTargets) / sizeof(kCjkSansTargets[0]));
-+        addSyntheticAlias("kohinoor devanagari", kSansTargets,
-+                          sizeof(kSansTargets) / sizeof(kSansTargets[0]));
-+        addSyntheticAlias("luminari", kSerifTargets,
-+                          sizeof(kSerifTargets) / sizeof(kSerifTargets[0]));
-+        addSyntheticAlias("american typewriter", kSerifTargets,
-+                          sizeof(kSerifTargets) / sizeof(kSerifTargets[0]));
-+        addSyntheticAlias("futura", kSansTargets,
-+                          sizeof(kSansTargets) / sizeof(kSansTargets[0]));
-+        addSyntheticAlias("inaimathi", kSansTargets,
-+                          sizeof(kSansTargets) / sizeof(kSansTargets[0]));
-+        addSyntheticAlias("galvji", kSansTargets,
-+                          sizeof(kSansTargets) / sizeof(kSansTargets[0]));
-+        addSyntheticAlias("muktamahee", kSansTargets,
-+                          sizeof(kSansTargets) / sizeof(kSansTargets[0]));
-+        addSyntheticAlias("stix two math", kSerifTargets,
-+                          sizeof(kSerifTargets) / sizeof(kSerifTargets[0]));
-+        addSyntheticAlias("stix two text", kSerifTargets,
-+                          sizeof(kSerifTargets) / sizeof(kSerifTargets[0]));
-+        addSyntheticAlias("apple sd gothic neo", kCjkSansTargets,
-+                          sizeof(kCjkSansTargets) / sizeof(kCjkSansTargets[0]));
-+        if (!mAliasTable.IsEmpty()) {
-+          SharedFontList()->SetAliases(mAliasTable);
-+          mAliasTable.Clear();
-+        }
-+      }
-     } else {
-       // something went wrong, fall back to in-process list
-       gfxCriticalNote << "Failed to initialize shared font list, "
 diff --git a/gfx/thebes/moz.build b/gfx/thebes/moz.build
-index ea2e2cc..7efb2bb 100644
+index 3d99906827..a9d1191688 100644
 --- a/gfx/thebes/moz.build
 +++ b/gfx/thebes/moz.build
-@@ -299,3 +299,6 @@ DEFINES["GRAPHITE2_STATIC"] = True
+@@ -301,3 +301,6 @@ DEFINES["GRAPHITE2_STATIC"] = True
  CXXFLAGS += ["-Werror=switch"]
- 
+
  include("/tools/fuzzing/libfuzzer-config.mozbuild")
 +
 +# DOM Mask
 +LOCAL_INCLUDES += ["/camoucfg"]
 \ No newline at end of file
 diff --git a/layout/style/FontFace.cpp b/layout/style/FontFace.cpp
-index ec69197..871b51f 100644
+index f1a90334ea..47d3a881ac 100644
 --- a/layout/style/FontFace.cpp
 +++ b/layout/style/FontFace.cpp
-@@ -241,7 +241,16 @@ void FontFace::SetSizeAdjust(const nsACString& aValue, ErrorResult& aRv) {
+@@ -237,7 +237,16 @@ void FontFace::SetSizeAdjust(const nsACString& aValue, ErrorResult& aRv) {
    mImpl->SetSizeAdjust(aValue, aRv);
  }
  
@@ -164,7 +61,7 @@ index ec69197..871b51f 100644
  
  Promise* FontFace::Load(ErrorResult& aRv) {
    EnsurePromise();
-@@ -251,7 +260,17 @@ Promise* FontFace::Load(ErrorResult& aRv) {
+@@ -247,7 +256,17 @@ Promise* FontFace::Load(ErrorResult& aRv) {
      return nullptr;
    }
  
@@ -184,10 +81,10 @@ index ec69197..871b51f 100644
  }
  
 diff --git a/layout/style/FontFaceImpl.cpp b/layout/style/FontFaceImpl.cpp
-index 31def99..fa853c7 100644
+index 9d1f7c8c5b..926315ca2f 100644
 --- a/layout/style/FontFaceImpl.cpp
 +++ b/layout/style/FontFaceImpl.cpp
-@@ -360,21 +360,15 @@ void FontFaceImpl::DoLoad() {
+@@ -357,22 +357,16 @@ void FontFaceImpl::DoLoad() {
  void FontFaceImpl::SetStatus(FontFaceLoadStatus aStatus) {
    gfxFontUtils::AssertSafeThreadOrServoFontMetricsLocked();
  
@@ -215,40 +112,31 @@ index 31def99..fa853c7 100644
    if (mInFontFaceSet) {
      mFontFaceSet->OnFontFaceStatusChanged(this);
    }
+ 
 diff --git a/layout/style/FontFaceImpl.h b/layout/style/FontFaceImpl.h
-index c677d2c..db62440 100644
+index 70c06609e9..66b2666621 100644
 --- a/layout/style/FontFaceImpl.h
 +++ b/layout/style/FontFaceImpl.h
-@@ -11,7 +11,9 @@
- #include "mozilla/FontPropertyTypes.h"
- #include "mozilla/RWLock.h"
+@@ -13,6 +13,7 @@
  #include "mozilla/ServoStyleConsts.h"
-+#include "mozilla/dom/FontListManager.h"
  #include "mozilla/dom/FontFaceBinding.h"
 +#include "MaskConfig.hpp"
  #include "nsTHashSet.h"
- 
+
  class gfxFontFaceBufferSource;
-@@ -32,6 +34,28 @@ class UTF8StringOrArrayBufferOrArrayBufferView;
+
+@@ -33,6 +34,20 @@
  
  namespace mozilla::dom {
  
 +// Helper function to check if a font is in the allowed list
 +inline bool IsFontAllowed(const nsACString& aFontName) {
-+  std::string fontName(aFontName.BeginReading(), aFontName.EndReading());
-+  std::transform(fontName.begin(), fontName.end(), fontName.begin(),
-+                 ::tolower);
-+
-+  const uint32_t currentContext = FontListManager::GetCurrentContext();
-+  if (FontListManager::HasFontList(currentContext) ||
-+      (currentContext != 0 && FontListManager::HasFontList(0))) {
-+    return FontListManager::IsFontAllowed(
-+        currentContext, nsDependentCString(fontName.c_str()));
-+  }
-+
 +  if (std::vector<std::string> maskValues =
 +          MaskConfig::GetStringListLower("fonts");
 +      !maskValues.empty()) {
++    std::string fontName(aFontName.BeginReading(), aFontName.EndReading());
++    std::transform(fontName.begin(), fontName.end(), fontName.begin(),
++                   ::tolower);
 +    return std::find(maskValues.begin(), maskValues.end(), fontName) !=
 +           maskValues.end();
 +  }
@@ -259,12 +147,14 @@ index c677d2c..db62440 100644
    NS_INLINE_DECL_THREADSAFE_REFCOUNTING(FontFaceImpl)
  
 diff --git a/layout/style/moz.build b/layout/style/moz.build
-index e9d6867..95b63b2 100644
+index a14ab6a7ac..6e6a727abf 100644
 --- a/layout/style/moz.build
 +++ b/layout/style/moz.build
-@@ -380,3 +380,5 @@ if CONFIG["COMPILE_ENVIRONMENT"]:
+@@ -378,4 +378,7 @@
+     CbindgenHeader(
+         "ServoStyleConsts.h",
          inputs=["/servo/ports/geckolib", "/servo/components/style"],
      )
- 
++
 +# DOM Mask
 +LOCAL_INCLUDES += ["/camoucfg"]

@@ -7,7 +7,7 @@ index d11c35ff9d..0aa4b9058b 100644
  # Note the manifest file exists in the tree, so we use the explicit filename
  # here.
 -EXTRA_DEPS += $(srcdir)/firefox.exe.manifest
-+EXTRA_DEPS += $(srcdir)/camoufox.exe.manifest
++EXTRA_DEPS += $(srcdir)/firefox.exe.manifest
  endif
  
  PROGRAMS_DEST = $(DIST)/bin

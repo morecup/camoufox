@@ -1,0 +1,33 @@
+diff --git a/dom/base/moz.build b/dom/base/moz.build
+--- a/dom/base/moz.build
++++ b/dom/base/moz.build
+@@ -428,7 +428,6 @@ UNIFIED_SOURCES += [
+     "EventSource.cpp",
+     "EventSourceEventService.cpp",
+     "External.cpp",
+-    "FontSpacingSeedManager.cpp",
+     "FormData.cpp",
+     "FragmentDirective.cpp",
+     "FragmentOrElement.cpp",
+@@ -477,6 +476,5 @@ UNIFIED_SOURCES += [
+     "ResizeObserver.cpp",
+     "ResponsiveImageSelector.cpp",
+-    "RoverfoxStorageManager.cpp",
+     "SameProcessMessageQueue.cpp",
+     "ScreenDimensionManager.cpp",
+     "ScreenLuminance.cpp",
+@@ -555,6 +553,14 @@ SOURCES += [
+     "nsPluginArray.cpp",
+ ]
+ 
++# FontSpacingSeedManager compiled separately to avoid unified build scope issues
++# (includes RoverfoxStorageManager.h which can affect compilation units)
++SOURCES += ["FontSpacingSeedManager.cpp"]
++
++# RoverfoxStorageManager compiled separately to avoid unified build scope issues
++# (shared storage implementation included by multiple spoofing managers)
++SOURCES += ["RoverfoxStorageManager.cpp"]
++
+ # NavigatorManager compiled separately to avoid unified build scope issues
+ # (includes RoverfoxStorageManager.h which can affect compilation units)
+ SOURCES += ["NavigatorManager.cpp"]
