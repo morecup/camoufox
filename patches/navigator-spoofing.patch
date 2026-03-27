@@ -3,48 +3,19 @@ new file mode 100644
 index 0000000000..37a1713159
 --- /dev/null
 +++ b/dom/base/NavigatorManager.cpp
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,78 @@
 +/* Camoufox: Per-context navigator property manager */
 +#include "NavigatorManager.h"
 +
 +#include "mozilla/dom/BrowsingContext.h"
-+#include "js/Wrapper.h"
 +#include "nsGlobalWindowInner.h"
 +#include "xpcpublic.h"
 +
 +namespace mozilla {
 +namespace dom {
 +
-+static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
-+                                                   JSObject* aObj) {
-+  if (!aObj) {
-+    return xpc::CurrentWindowOrNull(aCx);
-+  }
-+  if (!js::IsWrapper(aObj)) {
-+    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
-+      return win;
-+    }
-+    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
-+      return win;
-+    }
-+  }
-+  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
-+    return win;
-+  }
-+  if (JSObject* unwrapped =
-+          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
-+    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
-+      return win;
-+    }
-+    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
-+      return win;
-+    }
-+  }
-+  return xpc::CurrentWindowOrNull(aCx);
-+}
-+
-+static uint32_t GetUserContextId(JSContext* aCx, JSObject* aObj) {
-+  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
++static uint32_t GetUserContextId(JSObject* aObj) {
++  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
 +  if (!win) return 0;
 +  uint32_t id = 0;
 +  if (BrowsingContext* bc = win->GetBrowsingContext()) {
@@ -64,25 +35,49 @@ index 0000000000..37a1713159
 +/* static */
 +bool NavigatorManager::IsPlatformFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                          JSObject* aObj) {
-+  return !IsDisabled("nav_plat", GetUserContextId(aCx, aObj));
++  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  if (!win) return false;
++  uint32_t id = 0;
++  if (BrowsingContext* bc = win->GetBrowsingContext()) {
++    id = bc->OriginAttributesRef().mUserContextId;
++  }
++  return !IsDisabled("nav_plat", id);
 +}
 +
 +/* static */
 +bool NavigatorManager::IsOscpuFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                       JSObject* aObj) {
-+  return !IsDisabled("nav_oscpu", GetUserContextId(aCx, aObj));
++  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  if (!win) return false;
++  uint32_t id = 0;
++  if (BrowsingContext* bc = win->GetBrowsingContext()) {
++    id = bc->OriginAttributesRef().mUserContextId;
++  }
++  return !IsDisabled("nav_oscpu", id);
 +}
 +
 +/* static */
 +bool NavigatorManager::IsHwcFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                     JSObject* aObj) {
-+  return !IsDisabled("nav_hwc", GetUserContextId(aCx, aObj));
++  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  if (!win) return false;
++  uint32_t id = 0;
++  if (BrowsingContext* bc = win->GetBrowsingContext()) {
++    id = bc->OriginAttributesRef().mUserContextId;
++  }
++  return !IsDisabled("nav_hwc", id);
 +}
 +
 +/* static */
 +bool NavigatorManager::IsUaFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                    JSObject* aObj) {
-+  return !IsDisabled("nav_ua", GetUserContextId(aCx, aObj));
++  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  if (!win) return false;
++  uint32_t id = 0;
++  if (BrowsingContext* bc = win->GetBrowsingContext()) {
++    id = bc->OriginAttributesRef().mUserContextId;
++  }
++  return !IsDisabled("nav_ua", id);
 +}
 +
 +}  // namespace dom
@@ -224,7 +219,7 @@ index 318d2edba8..12feb91573 100644
  namespace mozilla::dom {
  
  static const nsLiteralCString kVibrationPermissionType = "vibration"_ns;
-@@ -262,5 +278,17 @@ void Navigator::Invalidate() {
+@@ -262,5 +278,22 @@ void Navigator::Invalidate() {
  void Navigator::GetUserAgent(nsAString& aUserAgent, CallerType aCallerType,
                               ErrorResult& aRv) const {
 +  // Camoufox: per-context user agent
@@ -239,16 +234,46 @@ index 318d2edba8..12feb91573 100644
 +      return;
 +    }
 +  }
++  // Camoufox: global config fallback
++  if (auto value = MaskConfig::GetString("navigator.userAgent")) {
++    aUserAgent.Assign(NS_ConvertUTF8toUTF16(value.value()));
++    return;
++  }
    nsCOMPtr<nsPIDOMWindowInner> window;
-
+ 
    if (mWindow) {
-@@ -308,6 +336,11 @@ void Navigator::GetAppCodeName(nsAString& aAppCodeName, ErrorResult& aRv) {
+@@ -308,6 +336,36 @@ void Navigator::GetAppCodeName(nsAString& aAppCodeName, ErrorResult& aRv) {
  
  void Navigator::GetAppVersion(nsAString& aAppVersion, CallerType aCallerType,
                                ErrorResult& aRv) const {
++  // Camoufox: per-context appVersion derived from navigator.userAgent override
++  if (mWindow) {
++    uint32_t userContextId = 0;
++    if (BrowsingContext* bc = mWindow->GetBrowsingContext()) {
++      userContextId = bc->OriginAttributesRef().mUserContextId;
++    }
++    nsAutoString stored;
++    if (NavigatorManager::GetUserAgent(userContextId, stored)) {
++      if (StringBeginsWith(stored, u"Mozilla/"_ns)) {
++        aAppVersion.Assign(Substring(stored, 8));
++      } else {
++        aAppVersion = stored;
++      }
++      return;
++    }
++  }
 +  // Camoufox: global config fallback for appVersion
 +  if (auto value = MaskConfig::GetString("navigator.appVersion")) {
 +    aAppVersion.Assign(NS_ConvertUTF8toUTF16(value.value()));
++    return;
++  }
++  if (auto value = MaskConfig::GetString("navigator.userAgent")) {
++    nsAutoString ua(NS_ConvertUTF8toUTF16(value.value()));
++    if (StringBeginsWith(ua, u"Mozilla/"_ns)) {
++      aAppVersion.Assign(Substring(ua, 8));
++    } else {
++      aAppVersion = ua;
++    }
 +    return;
 +  }
    nsCOMPtr<Document> doc = mWindow->GetExtantDoc();
@@ -508,8 +533,72 @@ index 6a0570cdf7..cf69daa15d 100644
  dictionary WindowPostMessageOptions : StructuredSerializeOptions {
    USVString targetOrigin = "/";
  };
+diff --git a/dom/workers/RuntimeService.cpp b/dom/workers/RuntimeService.cpp
+--- a/dom/workers/RuntimeService.cpp
++++ b/dom/workers/RuntimeService.cpp
+@@ -1116,7 +1116,7 @@ void PrefLanguagesChanged(const char* /* aPrefName */, void* /* aClosure */) {
+   AssertIsOnMainThread();
+ 
+   nsTArray<nsString> languages;
+-  Navigator::GetAcceptLanguages(languages, nullptr);
++  Navigator::GetAcceptLanguages(nullptr, languages);
+ 
+   RuntimeService* runtime = RuntimeService::GetService();
+   if (runtime) {
+@@ -1307,7 +1307,7 @@ bool RuntimeService::RegisterWorker(WorkerPrivate& aWorkerPrivate) {
+ 
+       // The navigator overridden properties should have already been read.
+ 
+-      Navigator::GetAcceptLanguages(mNavigatorProperties.mLanguages, nullptr);
++      Navigator::GetAcceptLanguages(nullptr, mNavigatorProperties.mLanguages);
+       mNavigatorPropertiesLoaded = true;
+     }
+ 
+diff --git a/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp b/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp
+--- a/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp
++++ b/toolkit/components/resistfingerprinting/nsUserCharacteristics.cpp
+@@ -588,8 +588,8 @@ void PopulateLanguages() {
+   // use Navigator::GetAcceptLanguages to create a language list. It is
+   // sufficient to only collect this information as the other properties are
+   // just reformats of Navigator::GetAcceptLanguages.
+   nsTArray<nsString> languages;
+-  dom::Navigator::GetAcceptLanguages(languages, nullptr);
++  dom::Navigator::GetAcceptLanguages(nullptr, languages);
+   nsCString output = "["_ns;
+ 
+   for (const auto& language : languages) {
+diff --git a/dom/webidl/WorkerNavigator.webidl b/dom/webidl/WorkerNavigator.webidl
+index 697b13159f..9b31709152 100644
+--- a/dom/webidl/WorkerNavigator.webidl
++++ b/dom/webidl/WorkerNavigator.webidl
+@@ -8,6 +8,12 @@ interface WorkerNavigator {
+ };
+ 
+ WorkerNavigator includes NavigatorID;
++
++[Exposed=Worker]
++partial interface WorkerNavigator {
++  [Throws, Constant, Cached, NeedsCallerType]
++  readonly attribute DOMString oscpu;
++};
+ WorkerNavigator includes NavigatorLanguage;
+ WorkerNavigator includes NavigatorOnLine;
+ WorkerNavigator includes NavigatorConcurrentHardware;
+diff --git a/dom/workers/WorkerNavigator.h b/dom/workers/WorkerNavigator.h
+index e6cd8c99f1..e4dcbfc93b 100644
+--- a/dom/workers/WorkerNavigator.h
++++ b/dom/workers/WorkerNavigator.h
+@@ -79,5 +79,8 @@ class WorkerNavigator final : public nsWrapperCache {
+   void GetAppVersion(nsString& aAppVersion, CallerType aCallerType,
+                      ErrorResult& aRv) const;
+ 
++  void GetOscpu(nsString& aOscpu, CallerType aCallerType,
++                ErrorResult& aRv) const;
++
+   void GetPlatform(nsString& aPlatform, CallerType aCallerType,
+                    ErrorResult& aRv) const;
 diff --git a/dom/workers/WorkerNavigator.cpp b/dom/workers/WorkerNavigator.cpp
-index c9a65ff013..d8268dd9ce 100644
+index c9a65ff013..79e07c41d6 100644
 --- a/dom/workers/WorkerNavigator.cpp
 +++ b/dom/workers/WorkerNavigator.cpp
 @@ -6,6 +6,8 @@
@@ -521,8 +610,140 @@ index c9a65ff013..d8268dd9ce 100644
  
  #include <utility>
  
-@@ -153,6 +155,18 @@ void WorkerNavigator::GetAppVersion(nsString& aAppVersion,
+@@ -32,6 +34,8 @@
+ #include "nsError.h"
+ #include "nsIGlobalObject.h"
+ #include "nsLiteralString.h"
++#include "nsIHttpProtocolHandler.h"
++#include "nsServiceManagerUtils.h"
+ #include "nsPIDOMWindow.h"
+ #include "nsRFPService.h"
+ #include "nsString.h"
+@@ -133,20 +137,129 @@ void WorkerNavigator::GetAppVersion(nsString& aAppVersion,
++  if (auto value = MaskConfig::GetString("navigator.userAgent")) {
++    nsAutoString ua(NS_ConvertUTF8toUTF16(value.value()));
++    if (StringBeginsWith(ua, u"Mozilla/"_ns)) {
++      aAppVersion.Assign(Substring(ua, 8));
++    } else {
++      aAppVersion = ua;
++    }
++    return;
++  }
+   WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
+   MOZ_ASSERT(workerPrivate);
  
+-  if (aCallerType != CallerType::System) {
+-    if (workerPrivate->ShouldResistFingerprinting(
+-            RFPTarget::NavigatorAppVersion)) {
+-      // See nsRFPService.h for spoofed value.
+-      aAppVersion.AssignLiteral(SPOOFED_APPVERSION);
+-      return;
+-    }
+-
+-    if (!mProperties.mAppVersionOverridden.IsEmpty()) {
+-      aAppVersion = mProperties.mAppVersionOverridden;
+-      return;
+-    }
++  if (aCallerType != CallerType::System &&
++      workerPrivate->ShouldResistFingerprinting(
++          RFPTarget::NavigatorAppVersion)) {
++    // See nsRFPService.h for spoofed value.
++    aAppVersion.AssignLiteral(SPOOFED_APPVERSION);
++    return;
++  }
++
++  nsAutoString resolvedUserAgent;
++  GetUserAgent(resolvedUserAgent, aCallerType, aRv);
++  if (aRv.Failed()) {
++    return;
++  }
++  if (!resolvedUserAgent.IsEmpty()) {
++    if (StringBeginsWith(resolvedUserAgent, u"Mozilla/"_ns)) {
++      aAppVersion.Assign(Substring(resolvedUserAgent, 8));
++    } else {
++      aAppVersion = resolvedUserAgent;
++    }
++    return;
++  }
++
++  if (aCallerType != CallerType::System &&
++      !mProperties.mAppVersionOverridden.IsEmpty()) {
++    aAppVersion = mProperties.mAppVersionOverridden;
++    return;
++  }
++
++  aAppVersion = mProperties.mAppVersion;
++}
++
++namespace {
++
++class GetOscpuRunnable final : public WorkerMainThreadRunnable {
++  nsString& mOscpu;
++
++ public:
++  GetOscpuRunnable(WorkerPrivate* aWorkerPrivate, nsString& aOscpu)
++      : WorkerMainThreadRunnable(aWorkerPrivate, "Oscpu getter"_ns),
++        mOscpu(aOscpu) {
++    MOZ_ASSERT(aWorkerPrivate);
++    aWorkerPrivate->AssertIsOnWorkerThread();
++  }
++
++  bool MainThreadRun() override {
++    AssertIsOnMainThread();
++
++    nsresult rv;
++    nsCOMPtr<nsIHttpProtocolHandler> service(
++        do_GetService("@mozilla.org/network/protocol;1?name=http", &rv));
++    if (NS_FAILED(rv)) {
++      NS_WARNING("Failed to retrieve HTTP protocol handler for worker oscpu.");
++      return true;
++    }
++
++    nsAutoCString oscpu;
++    rv = service->GetOscpu(oscpu);
++    if (NS_FAILED(rv)) {
++      NS_WARNING("Failed to retrieve oscpu from the worker thread.");
++      return true;
++    }
++
++    CopyASCIItoUTF16(oscpu, mOscpu);
++    return true;
++  }
++};
++
++}  // namespace
++
++void WorkerNavigator::GetOscpu(nsString& aOscpu, CallerType aCallerType,
++                               ErrorResult& aRv) const {
++  // Camoufox: per-context navigator oscpu for workers
++  {
++    WorkerPrivate* wp = GetCurrentThreadWorkerPrivate();
++    if (wp) {
++      uint32_t ucid = wp->GetOriginAttributes().mUserContextId;
++      nsAutoString stored;
++      if (mozilla::dom::NavigatorManager::GetOscpu(ucid, stored)) {
++        aOscpu = stored;
++        return;
++      }
++    }
++  }
++  if (auto value = MaskConfig::GetString("navigator.oscpu"))
++    return aOscpu.Assign(NS_ConvertUTF8toUTF16(value.value()));
++
++  WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
++  MOZ_ASSERT(workerPrivate);
++
++  if (aCallerType != CallerType::System &&
++      workerPrivate->ShouldResistFingerprinting(RFPTarget::NavigatorOscpu)) {
++    aOscpu.AssignLiteral(SPOOFED_OSCPU);
++    return;
++  }
++
++  RefPtr<GetOscpuRunnable> runnable =
++      new GetOscpuRunnable(workerPrivate, aOscpu);
++  runnable->Dispatch(workerPrivate, Canceling, aRv);
++}
++
  void WorkerNavigator::GetPlatform(nsString& aPlatform, CallerType aCallerType,
                                    ErrorResult& aRv) const {
 +  // Camoufox: per-context navigator platform for workers

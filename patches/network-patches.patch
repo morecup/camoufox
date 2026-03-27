@@ -40,7 +40,7 @@ index d0aebdf965..01472ec205 100644
      return mSpoofedUserAgent;
 @@ -2077,6 +2087,10 @@ nsresult nsHttpHandler::SetAcceptLanguages() {
    }
-
+ 
    MOZ_ASSERT(NS_IsMainThread());
 +  if (auto value = MaskConfig::GetString("headers.Accept-Language")) {
 +    mAcceptLanguages.Assign(nsCString(value.value().c_str()));
@@ -49,8 +49,8 @@ index d0aebdf965..01472ec205 100644
 
    mAcceptLanguagesIsDirty = false;
 
-@@ -2098,6 +2112,10 @@ nsresult nsHttpHandler::SetAcceptLanguages() {
-
+@@ -2098,8 +2112,12 @@ nsresult nsHttpHandler::SetAcceptLanguages() {
+ 
  nsresult nsHttpHandler::SetAcceptEncodings(const char* aAcceptEncodings,
                                             bool isSecure, bool isDictionary) {
 +  if (auto value = MaskConfig::GetString("headers.Accept-Encoding")) {
@@ -62,3 +62,50 @@ index d0aebdf965..01472ec205 100644
   } else if (isSecure) {
      mHttpsAcceptEncodings = aAcceptEncodings;
    } else {
+diff --git a/netwerk/protocol/http/HttpBaseChannel.cpp b/netwerk/protocol/http/HttpBaseChannel.cpp
+index 4132452313..1d0e1b9d0a 100644
+--- a/netwerk/protocol/http/HttpBaseChannel.cpp
++++ b/netwerk/protocol/http/HttpBaseChannel.cpp
+@@ -39,6 +39,7 @@
+ #include "mozilla/browser/NimbusFeatures.h"
+ #include "mozilla/dom/BrowsingContext.h"
+ #include "mozilla/dom/CanonicalBrowsingContext.h"
++#include "mozilla/dom/NavigatorManager.h"
+ #include "mozilla/dom/Document.h"
+ #include "mozilla/dom/FetchPriority.h"
+ #include "mozilla/dom/LoadURIOptionsBinding.h"
+@@ -526,12 +527,29 @@ NS_IMETHODIMP
+ HttpBaseChannel::SetDocshellUserAgentOverride() {
+   RefPtr<dom::BrowsingContext> bc;
+   MOZ_ALWAYS_SUCCEEDS(mLoadInfo->GetBrowsingContext(getter_AddRefs(bc)));
+-  if (!bc) {
+-    return NS_OK;
+-  }
+-
+   nsAutoString customUserAgent;
+-  bc->GetCustomUserAgent(customUserAgent);
++  if (bc) {
++    bc->GetCustomUserAgent(customUserAgent);
++  }
++
++  if (customUserAgent.IsEmpty() || customUserAgent.IsVoid()) {
++    MOZ_ALWAYS_SUCCEEDS(
++        mLoadInfo->GetWorkerAssociatedBrowsingContext(getter_AddRefs(bc)));
++    if (bc) {
++      bc->GetCustomUserAgent(customUserAgent);
++      if (customUserAgent.IsEmpty() || customUserAgent.IsVoid()) {
++        dom::NavigatorManager::GetUserAgent(
++            bc->OriginAttributesRef().mUserContextId, customUserAgent);
++      }
++    }
++  }
++
++  if (customUserAgent.IsEmpty() || customUserAgent.IsVoid()) {
++    mozilla::OriginAttributes attrs;
++    MOZ_ALWAYS_SUCCEEDS(mLoadInfo->GetOriginAttributes(&attrs));
++    dom::NavigatorManager::GetUserAgent(attrs.mUserContextId, customUserAgent);
++  }
++
+   if (customUserAgent.IsEmpty() || customUserAgent.IsVoid()) {
+     return NS_OK;
+   }

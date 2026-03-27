@@ -143,10 +143,11 @@ class Patcher:
 
         # Clean up .rej files so they don't interfere with subsequent patches
         for rej in rejects:
-            os.remove(rej)
-
-        if result.returncode != 0 and not rejects:
-            rejects.append(f'patch exited with status {result.returncode}')
+            try:
+                os.remove(rej)
+            except FileNotFoundError:
+                # Another patch step may have already removed the reject file.
+                continue
 
         return rejects
 

@@ -5,8 +5,36 @@ Fingerprint preset generation, injection, and profile config conversion.
 import json
 import re
 import sys
+from pathlib import Path
 
 from constants import TEST_TIMEZONES, WEBRTC_TEST_IP
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PYTHONLIB_DIR = REPO_ROOT / "pythonlib"
+
+
+def _load_generate_context_fingerprint():
+    try:
+        from camoufox.fingerprints import generate_context_fingerprint
+    except ImportError:
+        if PYTHONLIB_DIR.exists():
+            sys.path.insert(0, str(PYTHONLIB_DIR))
+            try:
+                from camoufox.fingerprints import generate_context_fingerprint
+            except ImportError:
+                pass
+            else:
+                return generate_context_fingerprint
+        print(
+            "ERROR: camoufox Python package not installed.\n"
+            "  Run: pip install camoufox  (or: bash scripts/setup.sh)",
+            file=sys.stderr,
+        )
+        if PYTHONLIB_DIR.exists():
+            print(f"  Source fallback tried: {PYTHONLIB_DIR}", file=sys.stderr)
+        sys.exit(1)
+    return generate_context_fingerprint
 
 
 # ─── Preset Generation ────────────────────────────────────────────────────────
@@ -50,15 +78,7 @@ def convert_preset(ctx: dict) -> dict:
 
 
 def generate_presets() -> dict:
-    try:
-        from camoufox.fingerprints import generate_context_fingerprint
-    except ImportError:
-        print(
-            "ERROR: camoufox Python package not installed.\n"
-            "  Run: pip install camoufox  (or: bash scripts/setup.sh)",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    generate_context_fingerprint = _load_generate_context_fingerprint()
 
     print("  Generating 3 macOS per-context profiles...")
     mac_per_context = [convert_preset(generate_context_fingerprint(os="macos")) for _ in range(3)]
@@ -91,22 +111,11 @@ def inject_timezone(preset: dict, timezone: str) -> None:
 
 
 def inject_webrtc_ip(preset: dict) -> None:
-    updated = re.sub(
-        r'w\.setWebRTCIPv4\([^)]*\)',
+    preset["initScript"] = re.sub(
+        r'w\.setWebRTCIPv4\(""\)',
         f"w.setWebRTCIPv4({json.dumps(WEBRTC_TEST_IP)})",
         preset["initScript"],
-        count=1,
     )
-    if updated == preset["initScript"]:
-        updated = preset["initScript"].replace(
-            '  var w = window;',
-            (
-                '  var w = window;\n'
-                f'  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4({json.dumps(WEBRTC_TEST_IP)});'
-            ),
-            1,
-        )
-    preset["initScript"] = updated
 
 
 # ─── Profile Config ───────────────────────────────────────────────────────────

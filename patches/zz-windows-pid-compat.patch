@@ -1,0 +1,31 @@
+diff --git a/third_party/libwebrtc/modules/desktop_capture/desktop_capturer.h b/third_party/libwebrtc/modules/desktop_capture/desktop_capturer.h
+--- a/third_party/libwebrtc/modules/desktop_capture/desktop_capturer.h
++++ b/third_party/libwebrtc/modules/desktop_capture/desktop_capturer.h
+@@ -12,6 +12,11 @@
+ #define MODULES_DESKTOP_CAPTURE_DESKTOP_CAPTURER_H_
+ 
+ #include <cstddef>
+ #include <cstdint>
++#if defined(WEBRTC_WIN) && !defined(_PID_T_DEFINED)
++typedef int pid_t;
++#define _PID_T_DEFINED
++#endif
++
+ #include <memory>
+ #include <string>
+ #include <type_traits>
+diff --git a/third_party/libwebrtc/modules/video_capture/video_capture.h b/third_party/libwebrtc/modules/video_capture/video_capture.h
+--- a/third_party/libwebrtc/modules/video_capture/video_capture.h
++++ b/third_party/libwebrtc/modules/video_capture/video_capture.h
+@@ -12,6 +12,11 @@
+ #define MODULES_VIDEO_CAPTURE_VIDEO_CAPTURE_H_
+ 
+ #include <cstdint>
++#if defined(WEBRTC_WIN) && !defined(_PID_T_DEFINED)
++typedef int pid_t;
++#define _PID_T_DEFINED
++#endif
++
+ 
+ #include "api/ref_count.h"
+ #include "api/video/video_frame.h"

@@ -53,6 +53,77 @@ def _extract_launch_config(from_options: Optional[Dict[str, Any]] = None) -> Dic
     return payload if isinstance(payload, dict) else {}
 
 
+def _infer_launch_os(config: Dict[str, Any]) -> Optional[str]:
+    """
+    Infer the target OS from launch-time navigator overrides when `os=` was not set.
+    """
+    user_agent = config.get("navigator.userAgent")
+    if not isinstance(user_agent, str) or not user_agent:
+        return None
+
+    ua = user_agent.lower()
+    if "windows" in ua:
+        return "windows"
+    if "macintosh" in ua or "mac os x" in ua:
+        return "macos"
+    if "linux" in ua or "x11" in ua:
+        return "linux"
+    return None
+
+
+def _build_context_preset_from_config(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Preserve explicit launch-time navigator overrides when browser.new_page/new_context
+    creates a fresh fingerprinted context.
+    """
+    navigator: Dict[str, Any] = {}
+    user_agent = config.get("navigator.userAgent")
+    if isinstance(user_agent, str) and user_agent:
+        navigator["userAgent"] = user_agent
+    platform = config.get("navigator.platform")
+    if isinstance(platform, str) and platform:
+        navigator["platform"] = platform
+    oscpu = config.get("navigator.oscpu")
+    if isinstance(oscpu, str) and oscpu:
+        navigator["oscpu"] = oscpu
+    hardware_concurrency = config.get("navigator.hardwareConcurrency")
+    if isinstance(hardware_concurrency, int):
+        navigator["hardwareConcurrency"] = hardware_concurrency
+
+    screen: Dict[str, Any] = {}
+    width = config.get("screen.width")
+    if isinstance(width, int) and width > 0:
+        screen["width"] = width
+    height = config.get("screen.height")
+    if isinstance(height, int) and height > 0:
+        screen["height"] = height
+    color_depth = config.get("screen.colorDepth")
+    if isinstance(color_depth, int) and color_depth > 0:
+        screen["colorDepth"] = color_depth
+
+    webgl: Dict[str, Any] = {}
+    vendor = config.get("webGl:vendor")
+    if isinstance(vendor, str) and vendor:
+        webgl["unmaskedVendor"] = vendor
+    renderer = config.get("webGl:renderer")
+    if isinstance(renderer, str) and renderer:
+        webgl["unmaskedRenderer"] = renderer
+
+    preset: Dict[str, Any] = {}
+    if navigator:
+        preset["navigator"] = navigator
+    if screen:
+        preset["screen"] = screen
+    if webgl:
+        preset["webgl"] = webgl
+
+    timezone = config.get("timezone")
+    if isinstance(timezone, str) and timezone:
+        preset["timezone"] = timezone
+
+    return preset or None
+
+
 def _extract_context_defaults(
     launch_kwargs: Optional[Dict[str, Any]] = None,
     from_options: Optional[Dict[str, Any]] = None,
@@ -72,6 +143,10 @@ def _extract_context_defaults(
     os_value = launch_kwargs.get("os")
     if isinstance(os_value, str):
         defaults["os"] = os_value
+    else:
+        inferred_os = _infer_launch_os(config)
+        if inferred_os:
+            defaults["os"] = inferred_os
 
     ff_version = launch_kwargs.get("ff_version")
     if ff_version is not None:
@@ -81,6 +156,12 @@ def _extract_context_defaults(
             executable_path=launch_kwargs.get("executable_path"),
             browser=launch_kwargs.get("browser") if isinstance(launch_kwargs.get("browser"), str) else None,
         )
+
+    explicit_config = launch_kwargs.get("config")
+    if isinstance(explicit_config, dict):
+        preset = _build_context_preset_from_config(explicit_config)
+        if preset:
+            defaults["preset"] = preset
 
     webrtc_ipv4 = config.get("webrtc:ipv4")
     if isinstance(webrtc_ipv4, str) and webrtc_ipv4:
@@ -192,6 +273,10 @@ async def _create_context_with_defaults(
     """
     camoufox_kwargs, playwright_kwargs = _split_context_kwargs(context_kwargs)
 
+    if "preset" not in camoufox_kwargs and isinstance(context_defaults.get("preset"), dict):
+        camoufox_kwargs["preset"] = _json.loads(
+            _json.dumps(context_defaults["preset"])
+        )
     if "os" not in camoufox_kwargs and isinstance(context_defaults.get("os"), str):
         camoufox_kwargs["os"] = context_defaults["os"]
     if "ff_version" not in camoufox_kwargs and context_defaults.get("ff_version") is not None:

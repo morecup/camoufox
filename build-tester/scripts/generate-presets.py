@@ -6,8 +6,34 @@ Output: JSON object to stdout with macPerContext, linuxPerContext, macGlobal, li
 """
 import json
 import sys
+from pathlib import Path
 
-from camoufox.fingerprints import generate_context_fingerprint
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PYTHONLIB_DIR = REPO_ROOT / 'pythonlib'
+
+
+def _load_generate_context_fingerprint():
+    try:
+        from camoufox.fingerprints import generate_context_fingerprint
+    except ImportError:
+        if PYTHONLIB_DIR.exists():
+            sys.path.insert(0, str(PYTHONLIB_DIR))
+            try:
+                from camoufox.fingerprints import generate_context_fingerprint
+            except ImportError:
+                pass
+            else:
+                return generate_context_fingerprint
+        print(
+            'ERROR: camoufox Python package not installed.\n'
+            '  Run: pip install camoufox  (or: bash scripts/setup.sh)',
+            file=sys.stderr,
+        )
+        if PYTHONLIB_DIR.exists():
+            print(f'  Source fallback tried: {PYTHONLIB_DIR}', file=sys.stderr)
+        sys.exit(1)
+    return generate_context_fingerprint
 
 
 def convert_preset(ctx):
@@ -49,6 +75,7 @@ def convert_preset(ctx):
 
 
 def main():
+    generate_context_fingerprint = _load_generate_context_fingerprint()
     results = {
         'macPerContext': [],
         'linuxPerContext': [],
