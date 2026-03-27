@@ -732,10 +732,10 @@ diff --git a/dom/webidl/Window.webidl b/dom/webidl/Window.webidl
 index 7c509eb87e..0a9010c2d1 100644
 --- a/dom/webidl/Window.webidl
 +++ b/dom/webidl/Window.webidl
-@@ -906,6 +906,17 @@ partial interface Window {
+@@ -892,6 +892,17 @@ partial interface Window {
   readonly attribute VisualViewport visualViewport;
  };
- 
+
 +// WebRTC IP interfaces for privacy-preserving IP spoofing
 +partial interface Window {
 +  [Throws, Func="mozilla::dom::WebRTCIPManager::IsIPv4FunctionEnabledForWebIDL"]
@@ -747,5 +747,6 @@ index 7c509eb87e..0a9010c2d1 100644
 +  undefined setWebRTCIPv6(DOMString ipv6);
 +};
 +
- // Font spacing seed interface for privacy-preserving font fingerprinting
+ // Used to assign marks to appear on the scrollbar when
+ // finding on a page.
  partial interface Window {

@@ -1,5 +1,5 @@
 diff --git a/dom/ipc/ContentParent.cpp b/dom/ipc/ContentParent.cpp
-index 1ff3195235..795cb05bc3 100644
+index fbd24a5d00..1ab5d16e54 100644
 --- a/dom/ipc/ContentParent.cpp
 +++ b/dom/ipc/ContentParent.cpp
 @@ -1231,6 +1231,26 @@ mozilla::ipc::IPCResult ContentParent::RecvCreateGMPService() {
@@ -30,7 +30,7 @@ index 1ff3195235..795cb05bc3 100644
      const nsACString& aHost, PrivateAttributionImpressionType aType,
      uint32_t aIndex, const nsAString& aAd, const nsACString& aTargetHost) {
 diff --git a/dom/ipc/ContentParent.h b/dom/ipc/ContentParent.h
-index 4a478a5a4d..161a1f993e 100644
+index 4a478a5a4d..4f00894f54 100644
 --- a/dom/ipc/ContentParent.h
 +++ b/dom/ipc/ContentParent.h
 @@ -362,6 +362,11 @@ class ContentParent final : public PContentParent,
@@ -46,7 +46,7 @@ index 4a478a5a4d..161a1f993e 100644
  
    NS_DECL_CYCLE_COLLECTING_ISUPPORTS
 diff --git a/dom/ipc/PContent.ipdl b/dom/ipc/PContent.ipdl
-index 39b01c305d..882bd54b8f 100644
+index 39b01c305d..d69fa94a95 100644
 --- a/dom/ipc/PContent.ipdl
 +++ b/dom/ipc/PContent.ipdl
 @@ -1113,6 +1113,13 @@ parent:
@@ -64,10 +64,10 @@ index 39b01c305d..882bd54b8f 100644
  
      async InitStreamFilter(uint64_t channelId, nsString addonId)
 diff --git a/ipc/ipdl/sync-messages.ini b/ipc/ipdl/sync-messages.ini
-index abcdef1234..1234abcdef 100644
+index 93d0c93386..25ea3e1c30 100644
 --- a/ipc/ipdl/sync-messages.ini
 +++ b/ipc/ipdl/sync-messages.ini
-@@ -369,5 +369,11 @@ description = This must be synchronous until quota file streams become non-blocki
+@@ -369,6 +369,12 @@ description = Finds certificates and private keys in the parent process. As this
  [PIPCClientCerts::Sign]
  description = Performs a signature on given data with a key corresponding to the given identifier. This is called from PKCS#11, so there is no way to make this asynchronous.
  # -
@@ -79,14 +79,17 @@ index abcdef1234..1234abcdef 100644
 +# -
  [PRemoteQuotaObject::MaybeUpdateSize]
  description = This must be synchronous until quota file streams become non-blocking. The synchronous message is never used on the main thread or the PBackground thread or a DOM worker threed.
+ 
 diff --git a/modules/libpref/Preferences.cpp b/modules/libpref/Preferences.cpp
-index aaaaaa0000..bbbbbb0000 100644
+index 792b0696a2..9145ed6006 100644
 --- a/modules/libpref/Preferences.cpp
 +++ b/modules/libpref/Preferences.cpp
-@@ -6364,6 +6364,8 @@ static const PrefListEntry sDynamicPrefOverrideList[]{
+@@ -6365,6 +6365,8 @@ static const PrefListEntry sDynamicPrefOverrideList[]{
      PREF_LIST_ENTRY("toolkit.mozprotocol.url"),
      PREF_LIST_ENTRY("toolkit.telemetry.log.level"),
      PREF_LIST_ENTRY("ui."),
 +    // Roverfox: allow cross-process sync of per-context fingerprint storage
 +    PREF_LIST_ENTRY("roverfox.s."),
  };
+ 
+ #undef PREF_LIST_ENTRY
