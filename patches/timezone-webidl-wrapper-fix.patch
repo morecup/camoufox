@@ -1,0 +1,54 @@
+diff --git a/dom/base/TimezoneManager.cpp b/dom/base/TimezoneManager.cpp
+--- a/dom/base/TimezoneManager.cpp
++++ b/dom/base/TimezoneManager.cpp
+@@ -1,5 +1,6 @@
+ #include "TimezoneManager.h"
+ #include "RoverfoxStorageManager.h"
++#include "js/Wrapper.h"
+ #include "nsGlobalWindowInner.h"
+ #include "xpcpublic.h"
+ #include "mozilla/dom/BrowsingContext.h"
+@@ -8,6 +9,34 @@
+ 
+ namespace mozilla {
+ namespace dom {
++
++static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
++                                                   JSObject* aObj) {
++  if (!aObj) {
++    return xpc::CurrentWindowOrNull(aCx);
++  }
++  if (!js::IsWrapper(aObj)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
++      return win;
++    }
++  }
++  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
++    return win;
++  }
++  if (JSObject* unwrapped =
++          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
++      return win;
++    }
++  }
++  return xpc::CurrentWindowOrNull(aCx);
++}
+ 
+ /* static */ nsString
+ TimezoneManager::DisabledKeyForUserContext(uint32_t userContextId) {
+@@ -24,7 +53,7 @@
+ 
+ /* static */ bool
+ TimezoneManager::IsFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj) {
+-  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
+   if (!win) {
+     return false;
+   }

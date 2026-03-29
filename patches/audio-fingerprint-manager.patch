@@ -1,185 +1,5 @@
-diff --git a/dom/base/AudioFingerprintManager.cpp b/dom/base/AudioFingerprintManager.cpp
-new file mode 100644
-index 0000000000..f47a35b2e3
---- /dev/null
-+++ b/dom/base/AudioFingerprintManager.cpp
-@@ -0,0 +1,135 @@
-+#include "AudioFingerprintManager.h"
-+#include "nsTHashMap.h"  // Must come before RoverfoxStorageManager.h for template defs
-+#include "nsHashKeys.h"  // For nsStringHashKey
-+#include "RoverfoxStorageManager.h"
-+#include "js/Wrapper.h"
-+#include "MaskConfig.hpp"
-+#include "nsGlobalWindowInner.h"
-+#include "xpcpublic.h"
-+#include "mozilla/dom/BrowsingContext.h"
-+#include <algorithm>
-+
-+namespace mozilla {
-+namespace dom {
-+
-+static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
-+                                                   JSObject* aObj) {
-+  if (!aObj) {
-+    return xpc::CurrentWindowOrNull(aCx);
-+  }
-+  if (!js::IsWrapper(aObj)) {
-+    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
-+      return win;
-+    }
-+    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
-+      return win;
-+    }
-+  }
-+  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
-+    return win;
-+  }
-+  if (JSObject* unwrapped =
-+          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
-+    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
-+      return win;
-+    }
-+    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
-+      return win;
-+    }
-+  }
-+  return xpc::CurrentWindowOrNull(aCx);
-+}
-+
-+/* static */ nsString
-+AudioFingerprintManager::DisabledKeyForUserContext(uint32_t userContextId) {
-+  nsString key;
-+  key.AppendPrintf("audio_disabled_%u", userContextId);
-+  return key;
-+}
-+
-+/* static */ void
-+AudioFingerprintManager::DisableFunction(uint32_t userContextId) {
-+  nsString key = DisabledKeyForUserContext(userContextId);
-+  RoverfoxStorageManager::PutBool(key, true);
-+}
-+
-+/* static */ void
-+AudioFingerprintManager::SetSeed(uint32_t aUserContextId, uint32_t aSeed) {
-+  nsString key;
-+  key.AppendPrintf("audioFingerprintSeed_%u", aUserContextId);
-+  RoverfoxStorageManager::PutUint(key, aSeed);
-+  DisableFunction(aUserContextId);
-+}
-+
-+/* static */ uint32_t
-+AudioFingerprintManager::GetSeed(uint32_t aUserContextId) {
-+  nsString key;
-+  key.AppendPrintf("audioFingerprintSeed_%u", aUserContextId);
-+  uint32_t seed = 0;
-+  if (RoverfoxStorageManager::GetUint(key, seed) && seed != 0) {
-+    return seed;
-+  }
-+  // Fallback to CAMOU_CONFIG for Workers in separate processes
-+  if (auto val = MaskConfig::GetUint32("audio:seed")) {
-+    return val.value();
-+  }
-+  return 0;
-+}
-+
-+/* static */ void
-+AudioFingerprintManager::ApplyTransformation(float* data, uint32_t length, uint32_t seed) {
-+  if (seed == 0 || length == 0 || !data) {
-+    return;
-+  }
-+  // LCG for deterministic transformation - same seed always produces same result
-+  // Uses 0.8% variance (range [0.996, 1.004]) with non-linear polynomial component
-+  // This is more robust than Brave's 0.1-0.2% variance which was bypassed
-+  uint32_t state = seed;
-+  for (uint32_t i = 0; i < length; ++i) {
-+    state = (state * 1664525u + 1013904223u);
-+    float normalized = static_cast<float>(state) / 4294967295.0f;
-+    // Linear base: 0.8% variance
-+    float base = 0.996f + normalized * 0.008f;
-+    // Non-linear polynomial adjustment - makes reverse-engineering harder
-+    float adjustment = (normalized * normalized - 0.5f) * 0.002f;
-+    float multiplier = base + adjustment;
-+    data[i] *= multiplier;
-+  }
-+}
-+
-+/* static */ void
-+AudioFingerprintManager::ApplyTransformationToBytes(uint8_t* data, uint32_t length, uint32_t seed) {
-+  if (seed == 0 || length == 0 || !data) {
-+    return;
-+  }
-+  // For byte data, apply small integer adjustments based on seed
-+  uint32_t state = seed;
-+  for (uint32_t i = 0; i < length; ++i) {
-+    state = (state * 1664525u + 1013904223u);
-+    // Small adjustment: -1, 0, or +1
-+    int32_t adjustment = static_cast<int32_t>(state % 3) - 1;
-+    int32_t newValue = static_cast<int32_t>(data[i]) + adjustment;
-+    // Clamp to valid byte range
-+    data[i] = static_cast<uint8_t>(std::max(0, std::min(255, newValue)));
-+  }
-+}
-+
-+/* static */ bool
-+AudioFingerprintManager::IsFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj) {
-+  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
-+  if (!win) {
-+    return false;
-+  }
-+
-+  uint32_t userContextId = 0;
-+  if (BrowsingContext* bc = win->GetBrowsingContext()) {
-+    userContextId = bc->OriginAttributesRef().mUserContextId;
-+  }
-+
-+  bool disabled = false;
-+  RoverfoxStorageManager::GetBool(DisabledKeyForUserContext(userContextId), disabled);
-+  return !disabled;
-+}
-+
-+}  // namespace dom
-+}  // namespace mozilla
-
-diff --git a/dom/base/AudioFingerprintManager.h b/dom/base/AudioFingerprintManager.h
-new file mode 100644
-index 0000000000..535ce3a6f9
---- /dev/null
-+++ b/dom/base/AudioFingerprintManager.h
-@@ -0,0 +1,31 @@
-+#ifndef mozilla_dom_AudioFingerprintManager_h
-+#define mozilla_dom_AudioFingerprintManager_h
-+
-+#include "nsString.h"
-+
-+// Forward declarations for SpiderMonkey types (needed when compiled separately)
-+struct JSContext;
-+class JSObject;
-+
-+namespace mozilla {
-+namespace dom {
-+
-+class AudioFingerprintManager {
-+ public:
-+  static void SetSeed(uint32_t aUserContextId, uint32_t aSeed);
-+  static uint32_t GetSeed(uint32_t aUserContextId);
-+
-+  static void ApplyTransformation(float* data, uint32_t length, uint32_t seed);
-+  static void ApplyTransformationToBytes(uint8_t* data, uint32_t length, uint32_t seed);
-+
-+  static void DisableFunction(uint32_t userContextId);
-+  static bool IsFunctionEnabledForWebIDL(JSContext* aCx, JSObject* aObj);
-+
-+ private:
-+  static nsString DisabledKeyForUserContext(uint32_t userContextId);
-+};
-+
-+}  // namespace dom
-+}  // namespace mozilla
-+
-+#endif  // mozilla_dom_AudioFingerprintManager_h
-
 diff --git a/dom/base/moz.build b/dom/base/moz.build
-index cd9090cda3..a1b2c3d4e5 100644
+index 3795ec7..6a1438d 100644
 --- a/dom/base/moz.build
 +++ b/dom/base/moz.build
 @@ -144,6 +144,7 @@ EXPORTS.mozilla.dom += [
@@ -190,21 +10,151 @@ index cd9090cda3..a1b2c3d4e5 100644
      "AutoPrintEventDispatcher.h",
      "AutoSuppressEventHandlingAndSuspend.h",
      "BarProps.h",
-@@ -326,4 +326,9 @@ SOURCES += [
-     "nsWindowSizes.cpp",
+@@ -221,6 +222,7 @@ EXPORTS.mozilla.dom += [
+     "MutationObservers.h",
+     "NameSpaceConstants.h",
+     "Navigator.h",
++    "NavigatorManager.h",
+     "NodeInfo.h",
+     "NodeInfoInlines.h",
+     "NodeIterator.h",
+@@ -258,6 +260,7 @@ EXPORTS.mozilla.dom += [
+     "ResponsiveImageSelector.h",
+     "RoverfoxStorageManager.h",
+     "SameProcessMessageQueue.h",
++    "ScreenDimensionManager.h",
+     "ScreenLuminance.h",
+     "ScreenOrientation.h",
+     "Selection.h",
+@@ -280,6 +283,7 @@ EXPORTS.mozilla.dom += [
+     "TimeoutBudgetManager.h",
+     "TimeoutHandler.h",
+     "TimeoutManager.h",
++    "TimezoneManager.h",
+     "TreeIterator.h",
+     "TreeOrderedArray.h",
+     "TreeOrderedArrayInlines.h",
+@@ -291,6 +295,7 @@ EXPORTS.mozilla.dom += [
+     "VideoFrameProvider.h",
+     "ViewportMetaData.h",
+     "VisualViewport.h",
++    "WebRTCIPManager.h",
+     "WindowFeatures.h",
+     "WindowProxyHolder.h",
  ]
-
+@@ -326,6 +331,15 @@ if CONFIG["COMPILE_ENVIRONMENT"]:
+         inputs=["fragmentdirectives"],
+     )
+ 
 +# AudioFingerprintManager compiled separately to avoid namespace pollution
 +# in unified builds (it includes RoverfoxStorageManager.h which can affect
 +# alphabetically-later files like BarProps.cpp)
 +SOURCES += ["AudioFingerprintManager.cpp"]
 +
++# WebRTCIPManager compiled separately to avoid unified build errors
++# (it includes RoverfoxStorageManager.h which causes template issues)
++SOURCES += ["WebRTCIPManager.cpp"]
++
  UNIFIED_SOURCES += [
+     "!UseCounterMetrics.cpp",
+     "AbstractRange.cpp",
+@@ -464,6 +478,7 @@ UNIFIED_SOURCES += [
+     "ResponsiveImageSelector.cpp",
+     "RoverfoxStorageManager.cpp",
+     "SameProcessMessageQueue.cpp",
++    "ScreenDimensionManager.cpp",
+     "ScreenLuminance.cpp",
+     "ScreenOrientation.cpp",
+     "ScriptableContentIterator.cpp",
+@@ -493,6 +508,7 @@ UNIFIED_SOURCES += [
+     "TimeoutExecutor.cpp",
+     "TimeoutHandler.cpp",
+     "TimeoutManager.cpp",
++    "TimezoneManager.cpp",
+     "TreeWalker.cpp",
+     "UIDirectionManager.cpp",
+     "UserActivation.cpp",
+@@ -538,6 +554,41 @@ SOURCES += [
+     "nsPluginArray.cpp",
+ ]
+ 
++# NavigatorManager compiled separately to avoid unified build scope issues
++# (includes RoverfoxStorageManager.h which can affect compilation units)
++SOURCES += ["NavigatorManager.cpp"]
++
++# CanvasFingerprintManager compiled separately to avoid unified build scope issues
++# (includes RoverfoxStorageManager.h which can affect compilation units)
++SOURCES += ["CanvasFingerprintManager.cpp"]
++
++EXPORTS.mozilla.dom += [
++    "CanvasFingerprintManager.h",
++]
++
++# FontListManager compiled separately (includes RoverfoxStorageManager.h)
++SOURCES += ["FontListManager.cpp"]
++
++EXPORTS.mozilla.dom += [
++    "FontListManager.h",
++]
++
++# SpeechVoicesManager compiled separately to avoid unified build scope issues
++# (includes RoverfoxStorageManager.h which can affect compilation units)
++SOURCES += ["SpeechVoicesManager.cpp"]
++
++EXPORTS.mozilla.dom += [
++    "SpeechVoicesManager.h",
++]
++
++# WebGLParamsManager compiled separately to avoid unified build scope issues
++# (includes RoverfoxStorageManager.h which can affect compilation units)
++SOURCES += ["WebGLParamsManager.cpp"]
++
++EXPORTS.mozilla.dom += [
++    "WebGLParamsManager.h",
++]
++
+ # Are we targeting x86-32 or x86-64?  If so, we want to include SSE2 code for
+ # CharacterDataBuffer.cpp
+ if CONFIG["INTEL_ARCHITECTURE"]:
+@@ -638,3 +689,6 @@ GeneratedFile(
+         "/servo/components/style/properties/counted_unknown_properties.py",
+     ],
+ )
++
++# DOM Mask
++LOCAL_INCLUDES += ["/camoucfg"]
+\ No newline at end of file
 diff --git a/dom/base/nsGlobalWindowInner.cpp b/dom/base/nsGlobalWindowInner.cpp
-index 748ae6cf83..b2c3d4e5f6 100644
+index 931adf0..76b7030 100644
 --- a/dom/base/nsGlobalWindowInner.cpp
 +++ b/dom/base/nsGlobalWindowInner.cpp
-@@ -91,6 +91,7 @@
+@@ -5,6 +5,8 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "nsGlobalWindowInner.h"
++#include "MaskConfig.hpp"
++#include "NavigatorManager.h"
+ 
+ #include <inttypes.h>
+ #include <stdio.h>
+@@ -19,12 +21,16 @@
+ #include "AudioChannelService.h"
+ #include "AutoplayPolicy.h"
+ #include "Crypto.h"
++#include "SpeechVoicesManager.h"
+ #include "MainThreadUtils.h"
++#include "CanvasFingerprintManager.h"
+ #include "Navigator.h"
+ #include "PaintWorkletImpl.h"
+ #include "SessionStorageCache.h"
++#include "FontListManager.h"
+ #include "Units.h"
+ #include "VRManagerChild.h"
++#include "WebGLParamsManager.h"
+ #include "WindowDestroyedEvent.h"
+ #include "WindowNamedPropertiesHandler.h"
+ #include "js/ComparisonOperators.h"
+@@ -92,6 +98,7 @@
  #include "mozilla/TimeStamp.h"
  #include "mozilla/UniquePtr.h"
  #include "mozilla/dom/AudioContext.h"
@@ -212,10 +162,273 @@ index 748ae6cf83..b2c3d4e5f6 100644
  #include "mozilla/dom/AutoEntryScript.h"
  #include "mozilla/dom/BarProps.h"
  #include "mozilla/dom/BindingDeclarations.h"
-@@ -7477,6 +7478,29 @@ void nsGlobalWindowInner::ForgetSharedWorker(SharedWorker* aSharedWorker) {
+@@ -245,6 +252,8 @@
+ #include "nsID.h"
+ #include "nsIDOMStorageManager.h"
+ #include "FontSpacingSeedManager.h"
++#include "TimezoneManager.h"
++#include "js/Date.h"
+ #include "nsDocShell.h"
+ #include "mozilla/OriginAttributes.h"
+ #include "nsIDOMXULControlElement.h"
+@@ -283,6 +292,7 @@
+ #include "nsISizeOfEventTarget.h"
+ #include "nsISlowScriptDebug.h"
+ #include "nsISupportsUtils.h"
++#include "ScreenDimensionManager.h"
+ #include "nsIThread.h"
+ #include "nsITimedChannel.h"
+ #include "nsIURI.h"
+@@ -327,6 +337,10 @@
+ #include "xpcprivate.h"
+ #include "xpcpublic.h"
+ 
++#include "WebRTCIPManager.h"
++#include "nsDocShell.h"
++#include "mozilla/OriginAttributes.h"
++
+ #ifdef NS_PRINTING
+ #  include "nsIPrintSettings.h"
+ #endif
+@@ -3443,6 +3457,8 @@ void nsGlobalWindowInner::SetName(const nsAString& aName,
+ }
+ 
+ double nsGlobalWindowInner::GetInnerWidth(ErrorResult& aError) {
++  if (auto value = MaskConfig::GetDouble("window.innerWidth"))
++    return value.value();
+   FORWARD_TO_OUTER_OR_THROW(GetInnerWidthOuter, (aError), aError, 0);
+ }
+ 
+@@ -3454,6 +3470,8 @@ nsresult nsGlobalWindowInner::GetInnerWidth(double* aWidth) {
+ }
+ 
+ double nsGlobalWindowInner::GetInnerHeight(ErrorResult& aError) {
++  if (auto value = MaskConfig::GetDouble("window.innerHeight"))
++    return value.value();
+   // We ignore aCallerType; we only have that argument because some other things
+   // called by GetReplaceableWindowCoord need it.  If this ever changes, fix
+   //   nsresult nsGlobalWindowInner::GetInnerHeight(double* aInnerWidth)
+@@ -3470,12 +3488,16 @@ nsresult nsGlobalWindowInner::GetInnerHeight(double* aHeight) {
+ 
+ int32_t nsGlobalWindowInner::GetOuterWidth(CallerType aCallerType,
+                                            ErrorResult& aError) {
++  if (auto value = MaskConfig::GetInt32("window.outerWidth"))
++    return value.value();
+   FORWARD_TO_OUTER_OR_THROW(GetOuterWidthOuter, (aCallerType, aError), aError,
+                             0);
+ }
+ 
+ int32_t nsGlobalWindowInner::GetOuterHeight(CallerType aCallerType,
+                                             ErrorResult& aError) {
++  if (auto value = MaskConfig::GetInt32("window.outerHeight"))
++    return value.value();
+   FORWARD_TO_OUTER_OR_THROW(GetOuterHeightOuter, (aCallerType, aError), aError,
+                             0);
+ }
+@@ -3490,11 +3512,13 @@ double nsGlobalWindowInner::ScreenEdgeSlopY() const {
+ 
+ int32_t nsGlobalWindowInner::GetScreenX(CallerType aCallerType,
+                                         ErrorResult& aError) {
++  if (auto value = MaskConfig::GetInt32("window.screenX")) return value.value();
+   FORWARD_TO_OUTER_OR_THROW(GetScreenXOuter, (aCallerType, aError), aError, 0);
+ }
+ 
+ int32_t nsGlobalWindowInner::GetScreenY(CallerType aCallerType,
+                                         ErrorResult& aError) {
++  if (auto value = MaskConfig::GetInt32("window.screenY")) return value.value();
+   FORWARD_TO_OUTER_OR_THROW(GetScreenYOuter, (aCallerType, aError), aError, 0);
+ }
+ 
+@@ -3528,6 +3552,8 @@ static nsPresContext* GetPresContextForRatio(Document* aDoc) {
+ double nsGlobalWindowInner::GetDevicePixelRatio(CallerType aCallerType,
+                                                 ErrorResult& aError) {
+   ENSURE_ACTIVE_DOCUMENT(aError, 0.0);
++  if (auto value = MaskConfig::GetDouble("window.devicePixelRatio"))
++    return value.value();
+ 
+   RefPtr<nsPresContext> presContext = GetPresContextForRatio(mDoc);
+   if (NS_WARN_IF(!presContext)) {
+@@ -3598,26 +3624,38 @@ already_AddRefed<MediaQueryList> nsGlobalWindowInner::MatchMedia(
+ }
+ 
+ int32_t nsGlobalWindowInner::GetScrollMinX(ErrorResult& aError) {
++  if (auto value = MaskConfig::GetInt32("window.scrollMinX"))
++    return value.value();
+   FORWARD_TO_OUTER_OR_THROW(GetScrollBoundaryOuter, (eSideLeft), aError, 0);
+ }
+ 
+ int32_t nsGlobalWindowInner::GetScrollMinY(ErrorResult& aError) {
++  if (auto value = MaskConfig::GetInt32("window.scrollMinY"))
++    return value.value();
+   FORWARD_TO_OUTER_OR_THROW(GetScrollBoundaryOuter, (eSideTop), aError, 0);
+ }
+ 
+ int32_t nsGlobalWindowInner::GetScrollMaxX(ErrorResult& aError) {
++  if (auto value = MaskConfig::GetInt32("window.scrollMaxX"))
++    return value.value();
+   FORWARD_TO_OUTER_OR_THROW(GetScrollBoundaryOuter, (eSideRight), aError, 0);
+ }
+ 
+ int32_t nsGlobalWindowInner::GetScrollMaxY(ErrorResult& aError) {
++  if (auto value = MaskConfig::GetInt32("window.scrollMaxY"))
++    return value.value();
+   FORWARD_TO_OUTER_OR_THROW(GetScrollBoundaryOuter, (eSideBottom), aError, 0);
+ }
+ 
+ double nsGlobalWindowInner::GetScrollX(ErrorResult& aError) {
++  if (auto value = MaskConfig::GetDouble("screen.pageXOffset"))
++    return value.value();
+   FORWARD_TO_OUTER_OR_THROW(GetScrollXOuter, (), aError, 0);
+ }
+ 
+ double nsGlobalWindowInner::GetScrollY(ErrorResult& aError) {
++  if (auto value = MaskConfig::GetDouble("screen.pageYOffset"))
++    return value.value();
+   FORWARD_TO_OUTER_OR_THROW(GetScrollYOuter, (), aError, 0);
+ }
+ 
+@@ -7421,6 +7459,52 @@ nsISerialEventTarget* nsGlobalWindowInner::SerialEventTarget() const {
+   return GetMainThreadSerialEventTarget();
+ }
+ 
++void nsGlobalWindowInner::SetScreenDimensions(int32_t aWidth, int32_t aHeight,
++                                              ErrorResult& aRv) {
++  uint32_t userContextId = ScreenDimensionManager::GetUserContextIdFromWindow(this);
++
++  if (aWidth <= 0 || aHeight <= 0) {
++    aRv.ThrowTypeError("Screen dimensions must be positive integers");
++    return;
++  }
++
++  ScreenDimensionManager::SetDimensions(userContextId, aWidth, aHeight);
++  ScreenDimensionManager::DisableFunction(userContextId);
++
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setScreenDimensions", undef);
++      JS_DeleteProperty(cx, global, "setScreenDimensions");
++    }
++  }
++}
++
++void nsGlobalWindowInner::SetScreenColorDepth(int32_t aColorDepth,
++                                              ErrorResult& aRv) {
++  uint32_t userContextId = ScreenDimensionManager::GetUserContextIdFromWindow(this);
++
++  if (aColorDepth <= 0) {
++    aRv.ThrowTypeError("Color depth must be a positive integer");
++    return;
++  }
++
++  ScreenDimensionManager::SetColorDepth(userContextId, aColorDepth);
++  ScreenDimensionManager::DisableFunction(userContextId);
++
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setScreenColorDepth", undef);
++      JS_DeleteProperty(cx, global, "setScreenColorDepth");
++    }
++  }
++}
++
+ Worklet* nsGlobalWindowInner::GetPaintWorklet(ErrorResult& aRv) {
+   if (!mPaintWorklet) {
+     nsIPrincipal* principal = GetPrincipal();
+@@ -7486,6 +7570,84 @@ void nsGlobalWindowInner::SetFontSpacingSeed(uint32_t seed, ErrorResult& aRv) {
+   }
+ }
+ 
++void nsGlobalWindowInner::SetTimezone(const nsAString& timezone, ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++
++  NS_LossyConvertUTF16toASCII timezoneASCII(timezone);
++
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    if (!JS::SetRealmTimeZoneOverride(cx, timezoneASCII.get())) {
++      aRv.ThrowTypeError("Invalid timezone identifier");
++      return;
++    }
++  }
++
++  TimezoneManager::SetTimezone(userContextId, timezone);
++
++  // Also store under userContextId=0 as fallback for shared/service workers
++  // which may have a different userContextId than the parent page.
++  if (userContextId != 0) {
++    TimezoneManager::SetTimezone(0, timezone);
++  }
++
++  // Set global process-wide timezone as ultimate fallback.
++  // Per-realm overrides (windows + dedicated workers) take priority.
++  // Shared/service workers without per-realm override fall back to this.
++  JS::SetTimeZoneOverride(timezoneASCII.get());
++
++  // Self-destruct: remove this function from the window object after first use.
++  // Set to undefined first to bust IC/shape caches on ARM64 (macOS Apple Silicon),
++  // then delete. Without this, the resolve hook may not re-fire on ARM64 and the
++  // Func guard never gets checked, causing the property to survive deletion.
++  if (JSContext* selfDestructCx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(selfDestructCx, JS::CurrentGlobalOrNull(selfDestructCx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(selfDestructCx, JS::UndefinedValue());
++      JS_SetProperty(selfDestructCx, global, "setTimezone", undef);
++      JS_DeleteProperty(selfDestructCx, global, "setTimezone");
++    }
++  }
++}
++
++void nsGlobalWindowInner::SetWebRTCIPv4(const nsAString& ipv4, ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++
++  WebRTCIPManager::SetIPv4(userContextId, ipv4);
++
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS_DeleteProperty(cx, global, "setWebRTCIPv4");
++    }
++  }
++}
++
++void nsGlobalWindowInner::SetWebRTCIPv6(const nsAString& ipv6, ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++
++  WebRTCIPManager::SetIPv6(userContextId, ipv6);
++
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS_DeleteProperty(cx, global, "setWebRTCIPv6");
++    }
++  }
++}
++
++
++
+ void nsGlobalWindowInner::StoreSharedWorker(SharedWorker* aSharedWorker) {
+   MOZ_ASSERT(aSharedWorker);
+   MOZ_ASSERT(!mSharedWorkers.Contains(aSharedWorker));
+@@ -7500,6 +7662,220 @@ void nsGlobalWindowInner::ForgetSharedWorker(SharedWorker* aSharedWorker) {
    mSharedWorkers.RemoveElement(aSharedWorker);
  }
-
+ 
 +
 +void nsGlobalWindowInner::SetAudioFingerprintSeed(uint32_t seed,
 +                                                    ErrorResult& aRv) {
@@ -239,27 +452,258 @@ index 748ae6cf83..b2c3d4e5f6 100644
 +  }
 +}
 +
++
++void nsGlobalWindowInner::SetCanvasSeed(uint32_t seed, ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++  CanvasFingerprintManager::SetSeed(userContextId, seed);
++  if (userContextId != 0) {
++    CanvasFingerprintManager::SetSeed(0, seed);
++  }
++  CanvasFingerprintManager::DisableFunction(userContextId);
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setCanvasSeed", undef);
++      JS_DeleteProperty(cx, global, "setCanvasSeed");
++    }
++  }
++}
++
++void nsGlobalWindowInner::SetFontList(const nsAString& aFontList,
++                                      ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++  FontListManager::SetFontList(userContextId, aFontList);
++  FontListManager::DisableFunction(userContextId);
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setFontList", undef);
++      JS_DeleteProperty(cx, global, "setFontList");
++    }
++  }
++}
++
++
++
++void nsGlobalWindowInner::SetNavigatorPlatform(const nsAString& platform,
++                                               ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++  NavigatorManager::SetPlatform(userContextId, platform);
++  if (userContextId != 0) {
++    NavigatorManager::SetPlatform(0, platform);
++  }
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setNavigatorPlatform", undef);
++      JS_DeleteProperty(cx, global, "setNavigatorPlatform");
++    }
++  }
++}
++
++void nsGlobalWindowInner::SetNavigatorOscpu(const nsAString& oscpu,
++                                            ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++  NavigatorManager::SetOscpu(userContextId, oscpu);
++  if (userContextId != 0) {
++    NavigatorManager::SetOscpu(0, oscpu);
++  }
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setNavigatorOscpu", undef);
++      JS_DeleteProperty(cx, global, "setNavigatorOscpu");
++    }
++  }
++}
++
++void nsGlobalWindowInner::SetNavigatorHardwareConcurrency(uint32_t cores,
++                                                          ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++  NavigatorManager::SetHardwareConcurrency(userContextId, cores);
++  if (userContextId != 0) {
++    NavigatorManager::SetHardwareConcurrency(0, cores);
++  }
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setNavigatorHardwareConcurrency", undef);
++      JS_DeleteProperty(cx, global, "setNavigatorHardwareConcurrency");
++    }
++  }
++}
++
++void nsGlobalWindowInner::SetNavigatorUserAgent(const nsAString& ua,
++                                                 ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++  NavigatorManager::SetUserAgent(userContextId, ua);
++  if (userContextId != 0) {
++    NavigatorManager::SetUserAgent(0, ua);
++  }
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setNavigatorUserAgent", undef);
++      JS_DeleteProperty(cx, global, "setNavigatorUserAgent");
++    }
++  }
++}
++
++void nsGlobalWindowInner::SetSpeechVoices(const nsAString& aVoices,
++                                           ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++  SpeechVoicesManager::SetVoices(userContextId, aVoices);
++  SpeechVoicesManager::DisableFunction(userContextId);
++  // Self-destruct: set to undefined first to bust IC/shape caches on ARM64.
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setSpeechVoices", undef);
++      JS_DeleteProperty(cx, global, "setSpeechVoices");
++    }
++  }
++}
++
++
++void nsGlobalWindowInner::SetWebGLVendor(const nsAString& vendor,
++                                          ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++  WebGLParamsManager::SetVendor(userContextId, vendor);
++  if (userContextId != 0) {
++    WebGLParamsManager::SetVendor(0, vendor);
++  }
++  WebGLParamsManager::DisableVendorFunction(userContextId);
++  // Self-destruct: only remove setWebGLVendor (renderer must remain callable)
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setWebGLVendor", undef);
++      JS_DeleteProperty(cx, global, "setWebGLVendor");
++    }
++  }
++}
++
++void nsGlobalWindowInner::SetWebGLRenderer(const nsAString& renderer,
++                                            ErrorResult& aRv) {
++  uint32_t userContextId = 0;
++  if (BrowsingContext* bc = GetBrowsingContext()) {
++    userContextId = bc->OriginAttributesRef().mUserContextId;
++  }
++  WebGLParamsManager::SetRenderer(userContextId, renderer);
++  if (userContextId != 0) {
++    WebGLParamsManager::SetRenderer(0, renderer);
++  }
++  WebGLParamsManager::DisableRendererFunction(userContextId);
++  // Self-destruct: only remove setWebGLRenderer (vendor must remain callable)
++  if (JSContext* cx = nsContentUtils::GetCurrentJSContext()) {
++    JS::Rooted<JSObject*> global(cx, JS::CurrentGlobalOrNull(cx));
++    if (global) {
++      JS::Rooted<JS::Value> undef(cx, JS::UndefinedValue());
++      JS_SetProperty(cx, global, "setWebGLRenderer", undef);
++      JS_DeleteProperty(cx, global, "setWebGLRenderer");
++    }
++  }
++}
++
  RefPtr<GenericPromise> nsGlobalWindowInner::StorageAccessPermissionChanged(
      bool aGranted) {
    // Invalidate cached StorageAllowed field so that calls to GetLocalStorage
-
 diff --git a/dom/base/nsGlobalWindowInner.h b/dom/base/nsGlobalWindowInner.h
-index 3183172d29..c4d5e6f7a8 100644
+index 46cb7d6..4991123 100644
 --- a/dom/base/nsGlobalWindowInner.h
 +++ b/dom/base/nsGlobalWindowInner.h
-@@ -676,6 +676,9 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
-
+@@ -675,6 +675,13 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
+ 
    mozilla::dom::Worklet* GetPaintWorklet(mozilla::ErrorResult& aRv);
-
+ 
 +  // Audio fingerprint seed for per-context audio fingerprinting
 +  void SetAudioFingerprintSeed(uint32_t seed, mozilla::ErrorResult& aRv);
 +
++  // Screen dimension methods for per-context screen spoofing
++  void SetScreenDimensions(int32_t aWidth, int32_t aHeight, mozilla::ErrorResult& aRv);
++  void SetScreenColorDepth(int32_t aColorDepth, mozilla::ErrorResult& aRv);
++
    void GetRegionalPrefsLocales(nsTArray<nsString>& aLocales);
-
+ 
    void GetWebExposedLocales(nsTArray<nsString>& aLocales);
-
+@@ -683,11 +690,37 @@ class nsGlobalWindowInner final : public mozilla::dom::EventTarget,
+ 
+   // Font spacing seed for privacy-preserving font fingerprinting
+   void SetFontSpacingSeed(uint32_t seed, mozilla::ErrorResult& aRv);
++  void SetTimezone(const nsAString& timezone, mozilla::ErrorResult& aRv);
++
++  // WebRTC IP addresses for privacy-preserving IP spoofing
++  void SetWebRTCIPv4(const nsAString& ipv4, mozilla::ErrorResult& aRv);
++  void SetWebRTCIPv6(const nsAString& ipv6, mozilla::ErrorResult& aRv);
+ 
+   void StoreSharedWorker(mozilla::dom::SharedWorker* aSharedWorker);
+ 
+   void ForgetSharedWorker(mozilla::dom::SharedWorker* aSharedWorker);
+ 
++  // Per-context navigator property spoofing
++  void SetNavigatorPlatform(const nsAString& platform,
++                            mozilla::ErrorResult& aRv);
++  void SetNavigatorOscpu(const nsAString& oscpu, mozilla::ErrorResult& aRv);
++  void SetNavigatorHardwareConcurrency(uint32_t cores,
++                                       mozilla::ErrorResult& aRv);
++  void SetNavigatorUserAgent(const nsAString& ua, mozilla::ErrorResult& aRv);
++
++  // Per-context canvas fingerprint seed
++  void SetCanvasSeed(uint32_t seed, mozilla::ErrorResult& aRv);
++
++  // Per-context font list spoofing
++  void SetFontList(const nsAString& aFontList, mozilla::ErrorResult& aRv);
++
++  // Per-context speech voices
++  void SetSpeechVoices(const nsAString& aVoices, mozilla::ErrorResult& aRv);
++
++  // Per-context WebGL parameter spoofing
++  void SetWebGLVendor(const nsAString& vendor, mozilla::ErrorResult& aRv);
++  void SetWebGLRenderer(const nsAString& renderer, mozilla::ErrorResult& aRv);
++
+  public:
+   void Alert(nsIPrincipal& aSubjectPrincipal, mozilla::ErrorResult& aError);
+   void Alert(const nsAString& aMessage, nsIPrincipal& aSubjectPrincipal,
 diff --git a/dom/media/webaudio/AudioBuffer.cpp b/dom/media/webaudio/AudioBuffer.cpp
-index f59d01944a..d21c86e030 100644
+index f59d019..6273478 100644
 --- a/dom/media/webaudio/AudioBuffer.cpp
 +++ b/dom/media/webaudio/AudioBuffer.cpp
 @@ -21,6 +21,9 @@
@@ -269,10 +713,10 @@ index f59d01944a..d21c86e030 100644
 +#include "AudioFingerprintManager.h"
 +#include "nsPIDOMWindow.h"
 +#include "mozilla/dom/BrowsingContext.h"
-
+ 
  namespace mozilla::dom {
-
-@@ -303,5 +306,26 @@ bool AudioBuffer::RestoreJSChannelData(JSContext* aJSContext) {
+ 
+@@ -303,6 +306,27 @@ bool AudioBuffer::RestoreJSChannelData(JSContext* aJSContext) {
        MOZ_ASSERT(!isShared);  // Was created as unshared above
        CopyChannelDataToFloat(mSharedChannels, i, 0, jsData, Length());
      }
@@ -299,7 +743,8 @@ index f59d01944a..d21c86e030 100644
 +    }
      mJSChannels[i] = array;
    }
-@@ -354,6 +377,24 @@ void AudioBuffer::CopyFromChannel(const Float32Array& aDestination,
+ 
+@@ -354,6 +378,24 @@ void AudioBuffer::CopyFromChannel(const Float32Array& aDestination,
                                   JS::AutoCheckCannotGC&&) {
        CopyChannelDataToFloat(mSharedChannels, aChannelNumber, aBufferOffset,
                               aData.Elements(), calculateCount(aData.Length()));
@@ -324,12 +769,11 @@ index f59d01944a..d21c86e030 100644
      });
      return;
    }
-
 diff --git a/dom/media/webaudio/AnalyserNode.cpp b/dom/media/webaudio/AnalyserNode.cpp
-index 4fd7c8be9a..e5f6a7b8c9 100644
+index 6fb46cc..79fb2ca 100644
 --- a/dom/media/webaudio/AnalyserNode.cpp
 +++ b/dom/media/webaudio/AnalyserNode.cpp
-@@ -13,5 +13,10 @@
+@@ -13,6 +13,11 @@
  #include "mozilla/PodOperations.h"
  #include "mozilla/dom/AnalyserNodeBinding.h"
  #include "nsMathUtils.h"
@@ -338,12 +782,13 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
 +#include "nsIGlobalObject.h"
 +#include "mozilla/dom/BrowsingContext.h"
 +#include "mozilla/dom/WorkerPrivate.h"
-
+ 
  namespace mozilla {
-@@ -216,4 +221,22 @@ void AnalyserNode::GetFloatFrequencyData(const Float32Array& aArray) {
+ 
+@@ -216,6 +221,24 @@ void AnalyserNode::GetFloatFrequencyData(const Float32Array& aArray) {
      return;
    }
-
+ 
 +  // Apply audio fingerprint transformation to frequency data
 +  {
 +    uint32_t userContextId = 0;
@@ -363,10 +808,12 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
 +    }
 +  }
    aArray.ProcessData([&](const Span<float>& aData, JS::AutoCheckCannotGC&&) {
-@@ -232,4 +254,22 @@ void AnalyserNode::GetByteFrequencyData(const Uint8Array& aArray) {
+     size_t length = std::min(size_t(aData.Length()), mOutputBuffer.Length());
+ 
+@@ -232,6 +255,24 @@ void AnalyserNode::GetByteFrequencyData(const Uint8Array& aArray) {
      return;
    }
-
+ 
 +  // Apply audio fingerprint transformation to frequency data
 +  {
 +    uint32_t userContextId = 0;
@@ -386,9 +833,11 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
 +    }
 +  }
    const double rangeScaleFactor = 1.0 / (mMaxDecibels - mMinDecibels);
-@@ -255,5 +295,23 @@ void AnalyserNode::GetFloatTimeDomainData(const Float32Array& aArray) {
+ 
+   aArray.ProcessData([&](const Span<uint8_t>& aData, JS::AutoCheckCannotGC&&) {
+@@ -255,6 +296,24 @@ void AnalyserNode::GetFloatTimeDomainData(const Float32Array& aArray) {
      size_t length = std::min(aData.Length(), size_t(FftSize()));
-
+ 
      GetTimeDomainData(aData.Elements(), length);
 +    // Apply audio fingerprint transformation to time domain data
 +    {
@@ -410,10 +859,11 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
 +    }
    });
  }
-@@ -269,6 +325,24 @@ void AnalyserNode::GetByteTimeDomainData(const Uint8Array& aArray) {
-
+ 
+@@ -269,6 +328,24 @@ void AnalyserNode::GetByteTimeDomainData(const Uint8Array& aArray) {
+ 
      GetTimeDomainData(tmpBuffer.Elements(), length);
-
+ 
 +    // Apply audio fingerprint transformation before byte conversion
 +    {
 +      uint32_t userContextId = 0;
@@ -435,33 +885,135 @@ index 4fd7c8be9a..e5f6a7b8c9 100644
      unsigned char* buffer = aData.Elements();
      for (size_t i = 0; i < length; ++i) {
        const float value = tmpBuffer[i];
-diff --git a/dom/media/webaudio/moz.build b/dom/media/webaudio/moz.build
-index 3ee8c0aa76..4cf10f3039 100644
---- a/dom/media/webaudio/moz.build
-+++ b/dom/media/webaudio/moz.build
-@@ -152,5 +152,8 @@ include("/ipc/chromium/chromium-config.mozbuild")
- FINAL_LIBRARY = "xul"
- LOCAL_INCLUDES += [".."]
-
- # DOM Mask
- LOCAL_INCLUDES += ["/camoucfg"]
-+
-+# AudioFingerprintManager in dom/base
-+LOCAL_INCLUDES += ["/dom/base"]
 diff --git a/dom/webidl/Window.webidl b/dom/webidl/Window.webidl
-index 7c509eb87e..7a076768d1 100644
+index 7a07676..f48e66b 100644
 --- a/dom/webidl/Window.webidl
 +++ b/dom/webidl/Window.webidl
-@@ -892,6 +892,12 @@ partial interface Window {
-   readonly attribute VisualViewport visualViewport;
+@@ -408,6 +408,8 @@ dictionary SynthesizeMouseEventData {
+   short inputSource = 1;
+   // Modifiers pressed, using constants defined as MODIFIER_* in nsIDOMWindowUtils.
+   long modifiers = 0;
++  // Juggler event identifier for tracking events across processes.
++  unsigned long jugglerEventId = 0;
  };
-
+ 
+ // Mozilla-specific stuff
+@@ -424,6 +426,8 @@ dictionary SynthesizeMouseEventOptions {
+   // Set this to true to ensure that the event is dispatched to this DOM window
+   // or one of its children.
+   boolean toWindow = false;
++  // Controls whether the mouse event should be converted to a pointer event.
++  boolean convertToPointer = true;
+ };
+ 
+ // Mozilla-specific stuff
+@@ -887,6 +891,18 @@ partial interface Window {
+   readonly attribute IntlUtils intlUtils;
+ };
+ 
++// Screen dimension for per-context screen spoofing
++partial interface Window {
++  [Throws, Func="mozilla::dom::ScreenDimensionManager::IsFunctionEnabledForWebIDL"]
++  undefined setScreenDimensions(long width, long height);
++};
++
++// Screen color depth for per-context screen spoofing
++partial interface Window {
++  [Throws, Func="mozilla::dom::ScreenDimensionManager::IsFunctionEnabledForWebIDL"]
++  undefined setScreenColorDepth(long colorDepth);
++};
++
+ partial interface Window {
+   [SameObject, Replaceable]
+   readonly attribute VisualViewport visualViewport;
+@@ -898,6 +914,47 @@ partial interface Window {
+   undefined setFontSpacingSeed(unsigned long seed);
+ };
+ 
 +// Audio fingerprint seed for per-context audio fingerprinting
 +partial interface Window {
 +  [Throws, Func="mozilla::dom::AudioFingerprintManager::IsFunctionEnabledForWebIDL"]
 +  undefined setAudioFingerprintSeed(unsigned long seed);
 +};
 +
++// Per-context canvas fingerprint seed
++partial interface Window {
++  [Throws, Func="mozilla::dom::CanvasFingerprintManager::IsFunctionEnabledForWebIDL"]
++  undefined setCanvasSeed(unsigned long seed);
++};
++
++// Per-context font list
++partial interface Window {
++  [Throws, Func="mozilla::dom::FontListManager::IsFunctionEnabledForWebIDL"]
++  undefined setFontList(DOMString fontList);
++};
++
++// Per-context speech voices
++partial interface Window {
++  [Throws, Func="mozilla::dom::SpeechVoicesManager::IsFunctionEnabledForWebIDL"]
++  undefined setSpeechVoices(DOMString voices);
++};
++
++// Timezone interface for per-context timezone spoofing
++partial interface Window {
++  [Throws, Func="mozilla::dom::TimezoneManager::IsFunctionEnabledForWebIDL"]
++  undefined setTimezone(DOMString timezone);
++};
++
++// WebRTC IP interfaces for privacy-preserving IP spoofing
++partial interface Window {
++  [Throws, Func="mozilla::dom::WebRTCIPManager::IsIPv4FunctionEnabledForWebIDL"]
++  undefined setWebRTCIPv4(DOMString ipv4);
++};
++
++partial interface Window {
++  [Throws, Func="mozilla::dom::WebRTCIPManager::IsIPv6FunctionEnabledForWebIDL"]
++  undefined setWebRTCIPv6(DOMString ipv6);
++};
++
  // Used to assign marks to appear on the scrollbar when
  // finding on a page.
  partial interface Window {
+@@ -907,6 +964,42 @@ partial interface Window {
+                            optional boolean onHorizontalScrollbar = false);
+ };
+ 
++// Per-context navigator platform spoofing
++partial interface Window {
++  [Throws, Func="mozilla::dom::NavigatorManager::IsPlatformFunctionEnabledForWebIDL"]
++  undefined setNavigatorPlatform(DOMString platform);
++};
++
++// Per-context navigator oscpu spoofing
++partial interface Window {
++  [Throws, Func="mozilla::dom::NavigatorManager::IsOscpuFunctionEnabledForWebIDL"]
++  undefined setNavigatorOscpu(DOMString oscpu);
++};
++
++// Per-context navigator hardware concurrency spoofing
++partial interface Window {
++  [Throws, Func="mozilla::dom::NavigatorManager::IsHwcFunctionEnabledForWebIDL"]
++  undefined setNavigatorHardwareConcurrency(unsigned long cores);
++};
++
++// Per-context navigator user agent spoofing
++partial interface Window {
++  [Throws, Func="mozilla::dom::NavigatorManager::IsUaFunctionEnabledForWebIDL"]
++  undefined setNavigatorUserAgent(DOMString ua);
++};
++
++// Per-context WebGL vendor spoofing
++partial interface Window {
++  [Throws, Func="mozilla::dom::WebGLParamsManager::IsVendorFunctionEnabledForWebIDL"]
++  undefined setWebGLVendor(DOMString vendor);
++};
++
++// Per-context WebGL renderer spoofing
++partial interface Window {
++  [Throws, Func="mozilla::dom::WebGLParamsManager::IsRendererFunctionEnabledForWebIDL"]
++  undefined setWebGLRenderer(DOMString renderer);
++};
++
+ dictionary WindowPostMessageOptions : StructuredSerializeOptions {
+   USVString targetOrigin = "/";
+ };

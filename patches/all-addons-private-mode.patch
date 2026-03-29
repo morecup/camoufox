@@ -1,9 +1,26 @@
-diff --git a/toolkit/components/extensions/Extension.jsm b/toolkit/components/extensions/Extension.jsm
-index 7281518..322dc09 100644
+diff --git a/toolkit/components/extensions/Extension.sys.mjs b/toolkit/components/extensions/Extension.sys.mjs
+index ea27b4d41a..7f608512bd 100644
 --- a/toolkit/components/extensions/Extension.sys.mjs
 +++ b/toolkit/components/extensions/Extension.sys.mjs
-@@ -3286,6 +3286,14 @@ class Extension extends ExtensionData {
-       this.permissions.add(PRIVATE_ALLOWED_PERMISSION);
+@@ -4288,40 +4288,48 @@ export class Extension extends ExtensionData {
+       !this.isHidden &&
+       !hasIncognitoNotAllowed &&
+       this.type === "extension"
+     ) {
+       const settings = Services.policies.getExtensionSettings(this.id);
+       if (settings?.private_browsing) {
+         lazy.ExtensionPermissions.add(this.id, {
+           permissions: [PRIVATE_ALLOWED_PERMISSION],
+           origins: [],
+         });
+         this.permissions.add(PRIVATE_ALLOWED_PERMISSION);
+       } else if (settings?.private_browsing === false) {
+         lazy.ExtensionPermissions.remove(this.id, {
+           permissions: [PRIVATE_ALLOWED_PERMISSION],
+           origins: [],
+         });
+         this.permissions.delete(PRIVATE_ALLOWED_PERMISSION);
+       }
      }
  
 +    // Allow all addons in private mode.
@@ -17,3 +34,20 @@ index 7281518..322dc09 100644
      // We only want to update the SVG_CONTEXT_PROPERTIES_PERMISSION during
      // install and upgrade/downgrade startups.
      if (INSTALL_AND_UPDATE_STARTUP_REASONS.has(this.startupReason)) {
+       if (isMozillaExtension(this)) {
+         // Add to EP so it is preserved after ADDON_INSTALL.
+         lazy.ExtensionPermissions.add(this.id, {
+           permissions: [SVG_CONTEXT_PROPERTIES_PERMISSION],
+           origins: [],
+         });
+         this.permissions.add(SVG_CONTEXT_PROPERTIES_PERMISSION);
+       } else {
+         lazy.ExtensionPermissions.remove(this.id, {
+           permissions: [SVG_CONTEXT_PROPERTIES_PERMISSION],
+           origins: [],
+         });
+         this.permissions.delete(SVG_CONTEXT_PROPERTIES_PERMISSION);
+       }
+       updateCache = true;
+     }
+ 
