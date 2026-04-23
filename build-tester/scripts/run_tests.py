@@ -23,7 +23,17 @@ import sys
 from runner import run_tests
 
 
+def _configure_stdio() -> None:
+    """Avoid crashing on legacy Windows console encodings during CLI output."""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(errors="replace")
+
+
 def main():
+    _configure_stdio()
     parser = argparse.ArgumentParser(
         description="Camoufox Build Tester — runs antibot-detection checks via Playwright",
         formatter_class=argparse.RawDescriptionHelpFormatter,

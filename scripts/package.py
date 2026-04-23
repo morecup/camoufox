@@ -4,6 +4,7 @@ import argparse
 import glob
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from shlex import join
@@ -13,10 +14,44 @@ from _mixin import find_src_dir, get_moz_target, list_files, run, temp_cd
 UNNEEDED_PATHS = {'uninstall', 'pingsender.exe', 'pingsender', 'vaapitest', 'glxtest'}
 
 
+def _format_cmd(args):
+    if os.name == 'nt':
+        return ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in args)
+    return join(args)
+
+
+def _find_7z():
+    seven_zip = shutil.which('7z') or shutil.which('7z.exe')
+    if seven_zip:
+        return seven_zip
+
+    if os.name == 'nt':
+        for candidate in (
+            r'C:\Program Files\7-Zip\7z.exe',
+            r'C:\Program Files (x86)\7-Zip\7z.exe',
+        ):
+            if os.path.isfile(candidate):
+                return candidate
+
+    raise FileNotFoundError('7z executable not found; install 7-Zip or add it to PATH.')
+
+
+def _run_process(args):
+    print(_format_cmd(args))
+    sys.stdout.flush()
+    result = subprocess.run(args)
+    if result.returncode != 0:
+        print(f"fatal error: command '{_format_cmd(args)}' failed")
+        sys.stdout.flush()
+        sys.exit(result.returncode)
+    return result
+
+
 def add_includes_to_package(package_file, includes, fonts, new_file, target):
+    seven_zip = _find_7z()
     with tempfile.TemporaryDirectory() as temp_dir:
         # Extract package
-        run(join(['7z', 'x', package_file, f'-o{temp_dir}']), exit_on_fail=False)
+        _run_process([seven_zip, 'x', package_file, f'-o{temp_dir}'])
         # Delete package_file
         os.remove(package_file)
         if package_file.endswith('.tar.xz'):
@@ -92,7 +127,7 @@ def add_includes_to_package(package_file, includes, fonts, new_file, target):
                 os.remove(os.path.join(target_dir, path))
 
         # Update package
-        run(join(['7z', 'u', new_file, f'{temp_dir}/*', '-r', '-mx=9']))
+        _run_process([seven_zip, 'u', new_file, f'{temp_dir}/*', '-r', '-mx=9'])
 
 
 def get_args():
@@ -126,7 +161,7 @@ def main():
     moz_target = get_moz_target(target=args.os, arch=args.arch)
     with temp_cd(src_dir):
         # Create package files
-        run('./mach package')
+        run('mach.cmd package' if os.name == 'nt' else './mach package')
         # Find package files
         search_path = os.path.abspath(
             f'obj-{moz_target}/dist/camoufox-{args.version}-{args.release}.*.{file_ext}'

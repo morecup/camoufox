@@ -6,12 +6,24 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Any, List
 
 from constants import TEST_TIMEZONES, WEBRTC_TEST_IP
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHONLIB_DIR = REPO_ROOT / "pythonlib"
+
+
+def _voice_names(voices: List[Any]) -> List[str]:
+    names: List[str] = []
+    for voice in voices or []:
+        if isinstance(voice, str) and voice:
+            names.append(voice)
+        elif isinstance(voice, dict):
+            name = voice.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+    return names
 
 
 def _load_generate_context_fingerprint():
@@ -72,18 +84,50 @@ def convert_preset(ctx: dict) -> dict:
             "webglRenderer": webgl.get("unmaskedRenderer", ""),
             "timezone": config.get("timezone", preset.get("timezone", "")),
             "fontList": config.get("fonts", preset.get("fonts", [])),
-            "speechVoices": config.get("voices", preset.get("speechVoices", [])),
+            "speechVoices": _voice_names(config.get("voices", preset.get("speechVoices", []))),
         },
     }
+
+
+def _screen_key(preset: dict) -> tuple[int, int]:
+    pc = preset["profileConfig"]
+    return (pc.get("screenWidth", 0), pc.get("screenHeight", 0))
+
+
+def _generate_unique_screen_presets(
+    generate_context_fingerprint, os_name: str, count: int
+) -> list[dict]:
+    presets = []
+    seen_screens = set()
+    attempts = 0
+    max_attempts = max(count * 20, count)
+
+    while len(presets) < count and attempts < max_attempts:
+        attempts += 1
+        preset = convert_preset(generate_context_fingerprint(os=os_name))
+        screen_key = _screen_key(preset)
+        if screen_key in seen_screens:
+            continue
+        seen_screens.add(screen_key)
+        presets.append(preset)
+
+    while len(presets) < count:
+        presets.append(convert_preset(generate_context_fingerprint(os=os_name)))
+
+    return presets
 
 
 def generate_presets() -> dict:
     generate_context_fingerprint = _load_generate_context_fingerprint()
 
     print("  Generating 3 macOS per-context profiles...")
-    mac_per_context = [convert_preset(generate_context_fingerprint(os="macos")) for _ in range(3)]
+    mac_per_context = _generate_unique_screen_presets(
+        generate_context_fingerprint, "macos", 3
+    )
     print("  Generating 3 Linux per-context profiles...")
-    linux_per_context = [convert_preset(generate_context_fingerprint(os="linux")) for _ in range(3)]
+    linux_per_context = _generate_unique_screen_presets(
+        generate_context_fingerprint, "linux", 3
+    )
     print("  Generating macOS global profile...")
     mac_global = convert_preset(generate_context_fingerprint(os="macos"))
     print("  Generating Linux global profile...")

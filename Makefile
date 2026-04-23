@@ -8,6 +8,18 @@ debs := python3 python3-dev python3-pip p7zip-full golang-go msitools wget aria2
 rpms := python3 python3-devel p7zip golang msitools wget aria2 sqlite-devel
 pacman := python python-pip p7zip go msitools wget aria2 sqlite
 
+ROOT_PYTHON := python3
+SRC_PYTHON := python3
+MACH_CMD := ./mach
+
+ifeq ($(OS),Windows_NT)
+ifneq ($(wildcard .venv/Scripts/python.exe),)
+ROOT_PYTHON := ./.venv/Scripts/python.exe
+SRC_PYTHON := ../.venv/Scripts/python.exe
+MACH_CMD := $(SRC_PYTHON) ./mach
+endif
+endif
+
 .PHONY: help fetch setup setup-minimal clean set-target distclean build package \
         build-launcher check-arch revert edits run bootstrap mozbootstrap dir \
         package-linux package-macos package-windows vcredist_arch patch unpatch \
@@ -63,6 +75,8 @@ setup: setup-minimal
 	# Initialize local git repo for development
 	cd $(cf_source_dir) && \
 		git init -b main && \
+		git config core.autocrlf false && \
+		git config core.eol lf && \
 		git add -f -A && \
 		git commit -m "Initial commit" && \
 		git tag -a unpatched -m "Initial commit"
@@ -83,14 +97,14 @@ dir:
 	@if [ ! -d $(cf_source_dir) ]; then \
 		make setup; \
 	fi
-	python3 scripts/patch.py $(version) $(release)
+	$(ROOT_PYTHON) scripts/patch.py $(version) $(release)
 	touch $(cf_source_dir)/_READY
 
 set-target:
-	python3 scripts/patch.py $(version) $(release) --mozconfig-only
+	$(ROOT_PYTHON) scripts/patch.py $(version) $(release) --mozconfig-only
 
 mozbootstrap:
-	cd $(cf_source_dir) && MOZBUILD_STATE_PATH=$$HOME/.mozbuild ./mach --no-interactive bootstrap --application-choice=browser
+	cd $(cf_source_dir) && MOZBUILD_STATE_PATH=$$HOME/.mozbuild $(MACH_CMD) --no-interactive bootstrap --application-choice=browser
 
 bootstrap: dir
 	(sudo apt-get -y install $(debs) || sudo dnf -y install $(rpms) || sudo pacman -Sy $(pacman))
@@ -111,7 +125,7 @@ checkpoint:
 	cd $(cf_source_dir) && git commit -m "Checkpoint" -uno
 
 clean:
-	cd $(cf_source_dir) && git clean -fdx && ./mach clobber
+	cd $(cf_source_dir) && git clean -fdx && $(MACH_CMD) clobber
 	make revert
 
 distclean:
@@ -121,10 +135,10 @@ build: unbusy
 	@if [ ! -f $(cf_source_dir)/_READY ]; then \
 		make dir; \
 	fi
-	cd $(cf_source_dir) && ./mach build $(_ARGS)
+	cd $(cf_source_dir) && $(MACH_CMD) build $(_ARGS)
 
 edits:
-	python3 ./scripts/developer.py $(version) $(release)
+	$(ROOT_PYTHON) ./scripts/developer.py $(version) $(release)
 
 check-arch:
 	@if ! echo "x86_64 i686 arm64" | grep -qw "$(arch)"; then \
@@ -136,7 +150,7 @@ build-launcher: check-arch
 	cd legacy/launcher && bash build.sh $(arch) $(os)
 
 package-linux:
-	python3 scripts/package.py linux \
+	$(ROOT_PYTHON) scripts/package.py linux \
 		--includes \
 			settings/chrome.css \
 			settings/camoucfg.jvv \
@@ -148,7 +162,7 @@ package-linux:
 		--fonts windows macos linux
 
 package-macos:
-	python3 scripts/package.py macos \
+	$(ROOT_PYTHON) scripts/package.py macos \
 		--includes \
 			settings/chrome.css \
 			settings/camoucfg.jvv \
@@ -159,7 +173,7 @@ package-macos:
 		--fonts windows linux
 
 package-windows:
-	python3 scripts/package.py windows \
+	$(ROOT_PYTHON) scripts/package.py windows \
 		--includes \
 			settings/chrome.css \
 			settings/camoucfg.jvv \
@@ -179,7 +193,7 @@ run-launcher:
 run-pw:
 	rm -rf $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/launch;
 	make build-launcher arch=x86_64 os=linux;
-	python3 scripts/run-pw.py \
+	$(ROOT_PYTHON) scripts/run-pw.py \
 		--version $(version) \
 		--release $(release)
 
@@ -187,7 +201,7 @@ run:
 	cd $(cf_source_dir) \
 	&& rm -rf ~/.camoufox obj-x86_64-pc-linux-gnu/tmp/profile-default \
 	&& CAMOU_CONFIG=$${CAMOU_CONFIG:-'{}'} \
-	&& CAMOU_CONFIG="$${CAMOU_CONFIG%?}, \"debug\": true}" ./mach run $(args)
+	&& CAMOU_CONFIG="$${CAMOU_CONFIG%?}, \"debug\": true}" $(MACH_CMD) run $(args)
 
 edit-cfg:
 	@if [ ! -f $(cf_source_dir)/obj-x86_64-pc-linux-gnu/dist/bin/camoufox.cfg ]; then \

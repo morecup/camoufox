@@ -7,6 +7,7 @@ Output: JSON object to stdout with macPerContext, linuxPerContext, macGlobal, li
 import json
 import sys
 from pathlib import Path
+from typing import Any, List
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +35,18 @@ def _load_generate_context_fingerprint():
             print(f'  Source fallback tried: {PYTHONLIB_DIR}', file=sys.stderr)
         sys.exit(1)
     return generate_context_fingerprint
+
+
+def voice_names(voices: List[Any]) -> List[str]:
+    names: List[str] = []
+    for voice in voices or []:
+        if isinstance(voice, str) and voice:
+            names.append(voice)
+        elif isinstance(voice, dict):
+            name = voice.get('name')
+            if isinstance(name, str) and name:
+                names.append(name)
+    return names
 
 
 def convert_preset(ctx):
@@ -69,9 +82,35 @@ def convert_preset(ctx):
             'webglRenderer': webgl.get('unmaskedRenderer', ''),
             'timezone': config.get('timezone', preset.get('timezone', '')),
             'fontList': config.get('fonts', preset.get('fonts', [])),
-            'speechVoices': config.get('voices', preset.get('speechVoices', [])),
+            'speechVoices': voice_names(config.get('voices', preset.get('speechVoices', []))),
         },
     }
+
+
+def screen_key(preset):
+    pc = preset['profileConfig']
+    return (pc.get('screenWidth', 0), pc.get('screenHeight', 0))
+
+
+def generate_unique_screen_presets(os_name, count):
+    presets = []
+    seen_screens = set()
+    attempts = 0
+    max_attempts = max(count * 20, count)
+
+    while len(presets) < count and attempts < max_attempts:
+        attempts += 1
+        preset = convert_preset(generate_context_fingerprint(os=os_name))
+        current_screen = screen_key(preset)
+        if current_screen in seen_screens:
+            continue
+        seen_screens.add(current_screen)
+        presets.append(preset)
+
+    while len(presets) < count:
+        presets.append(convert_preset(generate_context_fingerprint(os=os_name)))
+
+    return presets
 
 
 def main():
@@ -84,14 +123,10 @@ def main():
     }
 
     # 3 macOS per-context profiles
-    for _ in range(3):
-        ctx = generate_context_fingerprint(os='macos')
-        results['macPerContext'].append(convert_preset(ctx))
+    results['macPerContext'] = generate_unique_screen_presets('macos', 3)
 
     # 3 Linux per-context profiles
-    for _ in range(3):
-        ctx = generate_context_fingerprint(os='linux')
-        results['linuxPerContext'].append(convert_preset(ctx))
+    results['linuxPerContext'] = generate_unique_screen_presets('linux', 3)
 
     # 1 macOS global profile
     ctx = generate_context_fingerprint(os='macos')

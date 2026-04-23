@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import os
 import re
@@ -19,7 +20,6 @@ from camoufox.webgl import sample_webgl
 BROWSERFORGE_DATA = load_yaml('browserforge.yml')
 
 FP_GENERATOR = FingerprintGenerator(browser='firefox', os=('linux', 'macos', 'windows'))
-DEFAULT_FINGERPRINT_OS = ('windows', 'macos', 'linux')
 
 # Bundled real fingerprint presets
 PRESETS_FILE = Path(__file__).parent / 'fingerprint-presets.json'
@@ -35,6 +35,47 @@ _LINUX_MARKER_FONTS = [
 _WINDOWS_MARKER_FONTS = [
     'Segoe UI', 'Tahoma', 'Cambria Math', 'Nirmala UI',
 ]
+
+
+def _normalize_webrtc_ips(
+    webrtc_ip: Optional[str] = None,
+    webrtc_ipv6: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Normalize legacy/new WebRTC IP inputs into explicit IPv4/IPv6 values."""
+    ipv4 = ''
+    ipv6 = ''
+
+    for candidate in (webrtc_ip, webrtc_ipv6):
+        if not candidate:
+            continue
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        try:
+            parsed = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        if parsed.version == 4 and not ipv4:
+            ipv4 = candidate
+        elif parsed.version == 6 and not ipv6:
+            ipv6 = candidate
+
+    return ipv4, ipv6
+
+
+def _app_version_from_user_agent(user_agent: str) -> str:
+    """Derive navigator.appVersion from a Firefox user agent string."""
+    if user_agent.startswith('Mozilla/'):
+        return user_agent[len('Mozilla/') :]
+    return user_agent
+
+
+def _sync_user_agent_config(config: Dict[str, Any], user_agent: Optional[str]) -> None:
+    """Keep navigator.userAgent/appVersion aligned inside a fingerprint config."""
+    if not user_agent:
+        return
+    config['navigator.userAgent'] = user_agent
+    config['navigator.appVersion'] = _app_version_from_user_agent(user_agent)
 
 
 def _ensure_marker_fonts(fonts: List[str], markers: List[str]) -> None:
@@ -121,6 +162,54 @@ def _generate_random_font_subset(target_os: str) -> List[str]:
 
 # OS voice lists loaded from voices.json
 _OS_VOICES_CACHE: Optional[Dict[str, List[str]]] = None
+_OS_VOICE_ENTRIES_CACHE: Optional[Dict[str, List[Dict[str, Any]]]] = None
+
+
+def _voice_uri_prefix(target_os: str) -> str:
+    return {
+        'windows': 'urn:moz-tts:sapi:',
+        'macos': 'urn:moz-tts:osx:',
+        'linux': 'urn:moz-tts:speechd:',
+    }.get(target_os, 'urn:moz-tts:fake:')
+
+
+def _load_os_voice_entries() -> Dict[str, List[Dict[str, Any]]]:
+    """Load OS voice metadata from voices.json in CAMOU_CONFIG-compatible form."""
+    global _OS_VOICE_ENTRIES_CACHE
+    if _OS_VOICE_ENTRIES_CACHE is not None:
+        return _OS_VOICE_ENTRIES_CACHE
+
+    voices_path = os.path.join(os.path.dirname(__file__), 'voices.json')
+    with open(voices_path, 'rb') as f:
+        import orjson
+
+        raw = orjson.loads(f.read())
+
+    target_os_by_key = {'mac': 'macos', 'win': 'windows', 'lin': 'linux'}
+    parsed: Dict[str, List[Dict[str, Any]]] = {}
+    for os_key, entries in raw.items():
+        target_os = target_os_by_key.get(os_key, 'macos')
+        prefix = _voice_uri_prefix(target_os)
+        parsed_entries: List[Dict[str, Any]] = []
+        for entry in entries:
+            try:
+                name, lang, service_type = entry.split(':', 2)
+            except ValueError:
+                continue
+
+            parsed_entries.append(
+                {
+                    'name': name,
+                    'lang': lang,
+                    'voiceUri': f'{prefix}{name}?{lang}',
+                    'isDefault': False,
+                    'isLocalService': service_type.lower() == 'local',
+                }
+            )
+        parsed[os_key] = parsed_entries
+
+    _OS_VOICE_ENTRIES_CACHE = parsed
+    return _OS_VOICE_ENTRIES_CACHE
 
 
 def _load_os_voices() -> Dict[str, List[str]]:
@@ -128,15 +217,78 @@ def _load_os_voices() -> Dict[str, List[str]]:
     global _OS_VOICES_CACHE
     if _OS_VOICES_CACHE is not None:
         return _OS_VOICES_CACHE
-    voices_path = os.path.join(os.path.dirname(__file__), 'voices.json')
-    with open(voices_path, 'rb') as f:
-        import orjson
-        raw = orjson.loads(f.read())
-    # Extract voice names from "Name:locale:type" format
+
     _OS_VOICES_CACHE = {}
-    for os_key, entries in raw.items():
-        _OS_VOICES_CACHE[os_key] = [e.split(':')[0] for e in entries]
+    for os_key, entries in _load_os_voice_entries().items():
+        _OS_VOICES_CACHE[os_key] = [entry['name'] for entry in entries]
     return _OS_VOICES_CACHE
+
+
+def _normalize_voice_entries(
+    voices: Optional[List[Any]], target_os: str
+) -> List[Dict[str, Any]]:
+    """Normalize voices into the object form expected by CAMOU_CONFIG."""
+    if not voices:
+        return []
+
+    os_key = {'macos': 'mac', 'windows': 'win', 'linux': 'lin'}.get(target_os, 'mac')
+    entry_map = {
+        entry['name']: dict(entry)
+        for entry in _load_os_voice_entries().get(os_key, [])
+        if isinstance(entry, dict) and entry.get('name')
+    }
+    prefix = _voice_uri_prefix(target_os)
+
+    normalized: List[Dict[str, Any]] = []
+    for voice in voices:
+        if isinstance(voice, dict):
+            name = voice.get('name')
+            if not isinstance(name, str) or not name:
+                continue
+
+            entry = dict(entry_map.get(name, {}))
+            entry.update(voice)
+            entry.setdefault('lang', '')
+            entry.setdefault('voiceUri', f'{prefix}{name}?{entry["lang"]}')
+            entry.setdefault('isDefault', False)
+            entry.setdefault('isLocalService', True)
+            normalized.append(entry)
+            continue
+
+        if not isinstance(voice, str) or not voice:
+            continue
+
+        entry = dict(entry_map.get(voice, {}))
+        if not entry:
+            entry = {
+                'name': voice,
+                'lang': '',
+                'voiceUri': f'{prefix}{voice}?',
+                'isDefault': False,
+                'isLocalService': True,
+            }
+        normalized.append(entry)
+
+    if normalized and not any(entry.get('isDefault') for entry in normalized):
+        normalized[0]['isDefault'] = True
+
+    return normalized
+
+
+def _voice_names(voices: Optional[List[Any]]) -> List[str]:
+    """Extract display names from mixed voice representations."""
+    if not voices:
+        return []
+
+    names: List[str] = []
+    for voice in voices:
+        if isinstance(voice, str) and voice:
+            names.append(voice)
+        elif isinstance(voice, dict):
+            name = voice.get('name')
+            if isinstance(name, str) and name:
+                names.append(name)
+    return names
 
 
 # Essential speech voices per OS that must always be included in subsets
@@ -185,6 +337,12 @@ def _generate_random_voice_subset(target_os: str) -> List[str]:
     return result
 
 
+def generate_voice_config(target_os: str, voices: Optional[List[Any]] = None) -> List[Dict[str, Any]]:
+    """Return CAMOU_CONFIG-compatible voice objects for the requested OS."""
+    source = voices if voices is not None else _generate_random_voice_subset(target_os)
+    return _normalize_voice_entries(source, target_os)
+
+
 def load_presets() -> Optional[Dict]:
     """Load bundled fingerprint presets from JSON file."""
     global _PRESETS_CACHE
@@ -208,6 +366,19 @@ _OS_TO_PRESET_KEY = {
 }
 
 
+DEFAULT_FINGERPRINT_OS = _OS_TO_PRESET_KEY.get(
+    os.environ.get('CAMOUFOX_DEFAULT_OS', 'windows').strip().lower(),
+    'windows',
+)
+
+
+def resolve_fingerprint_os(target_os: Optional[Any] = None) -> Any:
+    """Use the configured default fingerprint OS when the caller does not specify one."""
+    if target_os is None:
+        return DEFAULT_FINGERPRINT_OS
+    return target_os
+
+
 def get_random_preset(
     os: Optional[str] = None,
 ) -> Optional[Dict]:
@@ -219,16 +390,16 @@ def get_random_preset(
     if not presets:
         return None
 
-    all_os_keys = ['macos', 'windows', 'linux']
+    resolved_os = resolve_fingerprint_os(os)
 
-    if os:
+    if resolved_os:
         # Normalize OS name
-        if isinstance(os, (list, tuple)):
-            os_keys = [_OS_TO_PRESET_KEY.get(o, o) for o in os]
+        if isinstance(resolved_os, (list, tuple)):
+            os_keys = [_OS_TO_PRESET_KEY.get(o, o) for o in resolved_os]
         else:
-            os_keys = [_OS_TO_PRESET_KEY.get(os, os)]
+            os_keys = [_OS_TO_PRESET_KEY.get(resolved_os, resolved_os)]
     else:
-        os_keys = all_os_keys
+        os_keys = ['macos', 'windows', 'linux']
 
     # Collect all matching presets
     candidates: List[Dict] = []
@@ -254,7 +425,7 @@ def from_preset(preset: Dict, ff_version: Optional[str] = None) -> Dict[str, Any
         if ff_version:
             ua = re.sub(r'Firefox/\d+\.0', f'Firefox/{ff_version}.0', ua)
             ua = re.sub(r'rv:\d+\.0', f'rv:{ff_version}.0', ua)
-        config['navigator.userAgent'] = ua
+        _sync_user_agent_config(config, ua)
     if nav.get('platform'):
         config['navigator.platform'] = nav['platform']
     if nav.get('hardwareConcurrency'):
@@ -324,10 +495,12 @@ def from_preset(preset: Dict, ff_version: Optional[str] = None) -> Dict[str, Any
             config['fonts'] = fonts
     # Generate a unique random voice subset from the OS voice list
     try:
-        config['voices'] = _generate_random_voice_subset(target_os)
+        config['voices'] = generate_voice_config(target_os)
     except Exception:
         if preset.get('speechVoices'):
-            config['voices'] = preset['speechVoices']
+            config['voices'] = generate_voice_config(target_os, preset['speechVoices'])
+    if 'voices' in config:
+        config.setdefault('voices:blockIfNotDefined', True)
 
     return config
 
@@ -385,15 +558,23 @@ def _build_init_script(values: Dict[str, Any]) -> str:
             '  if (typeof w.setTimezone === "function") w.setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone);'
         )
 
-    # WebRTC IP
-    ip = values.get('webrtcIP')
-    if ip:
+    # WebRTC IPs
+    ipv4 = values.get('webrtcIPv4')
+    if not ipv4:
+        ipv4 = values.get('webrtcIP')
+    if ipv4:
         lines.append(
-            f'  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4({_json.dumps(ip)});'
+            f'  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4({_json.dumps(ipv4)});'
         )
     else:
         lines.append(
             '  if (typeof w.setWebRTCIPv4 === "function") w.setWebRTCIPv4("");'
+        )
+
+    ipv6 = values.get('webrtcIPv6')
+    if ipv6:
+        lines.append(
+            f'  if (typeof w.setWebRTCIPv6 === "function") w.setWebRTCIPv6({_json.dumps(ipv6)});'
         )
 
     # Font list (comma-separated)
@@ -405,8 +586,8 @@ def _build_init_script(values: Dict[str, Any]) -> str:
         )
 
     # Speech voices (comma-separated)
-    voices = values.get('speechVoices')
-    if voices and len(voices) > 0:
+    voices = _voice_names(values.get('speechVoices'))
+    if voices:
         joined = ','.join(voices)
         lines.append(
             f'  if (typeof w.setSpeechVoices === "function") w.setSpeechVoices({_json.dumps(joined)});'
@@ -437,8 +618,9 @@ def generate_context_fingerprint(
         screen = preset.get('screen', {})
         webgl = preset.get('webgl', {})
     else:
+        effective_os = resolve_fingerprint_os(os)
         # Fall back to BrowserForge synthetic generation
-        fp = generate_fingerprint(os=os)
+        fp = generate_fingerprint(os=effective_os)
         config = from_browserforge(fp, ff_version)
 
         # Add seeds (BrowserForge doesn't generate these)
@@ -464,9 +646,13 @@ def generate_context_fingerprint(
         # Add voices (BrowserForge doesn't generate these)
         if 'voices' not in config:
             try:
-                config['voices'] = _generate_random_voice_subset(os_name)
+                config['voices'] = generate_voice_config(os_name)
             except Exception:
                 pass
+        else:
+            config['voices'] = generate_voice_config(os_name, config.get('voices'))
+        if 'voices' in config:
+            config.setdefault('voices:blockIfNotDefined', True)
 
         # Derive oscpu if BrowserForge didn't provide it
         if 'navigator.oscpu' not in config:
@@ -481,7 +667,7 @@ def generate_context_fingerprint(
         # Sample WebGL vendor/renderer from database (BrowserForge doesn't generate these)
         if not config.get('webGl:vendor') or not config.get('webGl:renderer'):
             _os_map = {'macos': 'mac', 'linux': 'lin', 'windows': 'win'}
-            _target_os = _os_map.get(os or '', None)
+            _target_os = _os_map.get(effective_os or '', None)
             if not _target_os:
                 plat = config.get('navigator.platform', '')
                 if plat == 'Win32':
@@ -514,13 +700,17 @@ def generate_context_fingerprint(
         }
         preset = {'navigator': nav, 'screen': screen, 'webgl': webgl}
 
-    if webrtc_ipv6:
-        config['webrtc:ipv6'] = webrtc_ipv6
+    webrtc_ipv4_value, webrtc_ipv6_value = _normalize_webrtc_ips(
+        webrtc_ip=webrtc_ip,
+        webrtc_ipv6=webrtc_ipv6,
+    )
+    if webrtc_ipv6_value:
+        config['webrtc:ipv6'] = webrtc_ipv6_value
 
     # Keep navigator.appVersion aligned with the final UA string for CAMOU_CONFIG.
     ua = config.get('navigator.userAgent')
     if isinstance(ua, str) and ua:
-        config['navigator.appVersion'] = ua[8:] if ua.startswith('Mozilla/') else ua
+        _sync_user_agent_config(config, ua)
 
     # Build the values dict for the init script (works for both paths)
     init_values: Dict[str, Any] = {
@@ -538,8 +728,9 @@ def generate_context_fingerprint(
         'screenColorDepth': screen.get('colorDepth'),
         'timezone': preset.get('timezone') if isinstance(preset.get('timezone'), str) else config.get('timezone'),
         'fontList': config.get('fonts'),
-        'speechVoices': config.get('voices'),
-        'webrtcIP': webrtc_ip or '',
+        'speechVoices': _voice_names(config.get('voices')),
+        'webrtcIPv4': webrtc_ipv4_value,
+        'webrtcIPv6': webrtc_ipv6_value,
     }
 
     init_script = _build_init_script(init_values)

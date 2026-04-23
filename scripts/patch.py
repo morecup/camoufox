@@ -47,9 +47,24 @@ class Patcher:
         """
         version, release = extract_args()
         with temp_cd(find_src_dir('.', version, release)):
+            run('git config core.autocrlf false', exit_on_fail=False)
+            run('git config core.eol lf', exit_on_fail=False)
+
+            if options.mozconfig_only:
+                base_mozconfig = os.path.join("..", "assets", "base.mozconfig")
+                if not os.path.exists("mozconfig") and os.path.exists(base_mozconfig):
+                    shutil.copy2(base_mozconfig, "mozconfig")
+                print("Updating mozconfig only...")
+                print(f'Using target: {self.moz_target}')
+                self._update_mozconfig()
+                print('Complete!')
+                return
+
             # Reset to unpatched state first (like "Find broken patches")
             print("Resetting to unpatched state...")
-            run('git clean -fdx && ./mach clobber && git reset --hard unpatched', exit_on_fail=False)
+            run('git clean -fdx', exit_on_fail=False)
+            run('mach.cmd clobber' if os.name == 'nt' else './mach clobber', exit_on_fail=False)
+            run('git reset --hard unpatched', exit_on_fail=False)
 
             # Re-copy additions and settings after reset
             print("Re-copying additions and settings...")
@@ -120,15 +135,28 @@ class Patcher:
         # Apply patch interactively - don't capture stdout/stderr at all
         # This allows prompts to show immediately and user can respond
         # --forward flag: skip patches that appear to be already applied
-        # --binary flag: preserve line endings (helps with CRLF vs LF differences)
+        # On Windows, `patch --binary` rejects LF hunks against CRLF working-tree
+        # files with "different line endings". Text mode lets GNU patch
+        # normalize line endings during application.
         # -l flag: ignore whitespace differences
+        patch_cmd = ['patch', '-p1', '--forward', '-l', '-i', patch_file]
+        if os.name != 'nt':
+            patch_cmd.insert(4, '--binary')
+
         result = subprocess.run(
-            ['patch', '-p1', '--forward', '-l', '--binary', '-i', patch_file],
+            patch_cmd,
             stdin=sys.stdin,
-            stdout=sys.stdout,
-            stderr=sys.stderr,
-            text=True
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
         )
+
+        if result.stdout:
+            sys.stdout.write(result.stdout)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+        sys.stdout.flush()
+        sys.stderr.flush()
 
         # After patch completes, search for any .rej files created during this patch
         rejects = []
@@ -144,10 +172,33 @@ class Patcher:
         # Clean up .rej files so they don't interfere with subsequent patches
         for rej in rejects:
             try:
-                os.remove(rej)
+                if os.path.exists(rej):
+                    os.remove(rej)
             except FileNotFoundError:
                 # Another patch step may have already removed the reject file.
                 continue
+
+        output = f"{result.stdout}\n{result.stderr}"
+        has_real_failure = any(
+            marker in output
+            for marker in (
+                'FAILED at',
+                'malformed patch',
+                'Only garbage was found',
+                'No file to patch',
+                "can't find file to patch",
+                'patch unexpectedly ends in middle of line',
+            )
+        )
+
+        # `patch --forward` can emit `.rej` files when hunks are already applied or
+        # when file-creation hunks are skipped because the file already exists.
+        # Those are benign for our layered patch stack and should not fail the build.
+        if rejects and not has_real_failure:
+            rejects = []
+
+        if result.returncode != 0 and not rejects and has_real_failure:
+            rejects.append(f'patch exited with status {result.returncode}')
 
         return rejects
 
@@ -155,13 +206,16 @@ class Patcher:
         """
         Helper for adding additional mozconfig code from assets/<target>.mozconfig
         """
+        base_mozconfig = os.path.join("..", "assets", "base.mozconfig")
         mozconfig_backup = "mozconfig.backup"
         mozconfig = "mozconfig"
         mozconfig_hash = "mozconfig.hash"
 
         # Create backup if it doesn't exist
         if not os.path.exists(mozconfig_backup):
-            if os.path.exists(mozconfig):
+            if os.path.exists(base_mozconfig):
+                shutil.copy2(base_mozconfig, mozconfig_backup)
+            elif os.path.exists(mozconfig):
                 shutil.copy2(mozconfig, mozconfig_backup)
             else:
                 with open(mozconfig_backup, 'w', encoding='utf-8') as f:
@@ -193,8 +247,29 @@ class Patcher:
 
 def add_rustup(*targets):
     """Add rust targets"""
+    rustup = shutil.which("rustup")
+    if not rustup:
+        cargo_bin = os.path.join(os.path.expanduser("~"), ".cargo", "bin")
+        candidates = [os.path.join(cargo_bin, "rustup")]
+        if os.name == "nt":
+            candidates.insert(0, os.path.join(cargo_bin, "rustup.exe"))
+        rustup = next((path for path in candidates if os.path.isfile(path)), None)
+
+    if not rustup:
+        sys.stderr.write(
+            "error: rustup executable not found. Install Rust via rustup and ensure it is on PATH.\n"
+        )
+        sys.exit(1)
+
     for rust_target in targets:
-        run(f'~/.cargo/bin/rustup target add "{rust_target}"')
+        cmd = [rustup, "target", "add", rust_target]
+        print(" ".join(f'"{part}"' if " " in part else part for part in cmd))
+        sys.stdout.flush()
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            print(f"fatal error: command '{cmd}' failed")
+            sys.stdout.flush()
+            sys.exit(result.returncode)
 
 
 def _update_rustup(target):
@@ -228,7 +303,11 @@ def extract_build_target():
     """Get moz_target if passed to BUILD_TARGET environment variable"""
 
     if os.environ.get('BUILD_TARGET'):
-        target, arch = os.environ['BUILD_TARGET'].split(',')
+        parts = [part.strip() for part in os.environ['BUILD_TARGET'].split(',', 1)]
+        assert len(parts) == 2, (
+            f"BUILD_TARGET must be '<target>,<arch>', got: {os.environ['BUILD_TARGET']}"
+        )
+        target, arch = parts
         assert target in AVAILABLE_TARGETS, f"Unsupported target: {target}"
         assert arch in AVAILABLE_ARCHS, f"Unsupported architecture: {arch}"
     else:

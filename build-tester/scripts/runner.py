@@ -341,7 +341,8 @@ async def run_tests(
     cross_profile = compute_cross_profile(profile_results)
     total_passed = sum(p["passCount"] for p in profile_results)
     total_checks_sum = sum(p["totalChecks"] for p in profile_results)
-    overall_grade = compute_grade(total_passed, total_checks_sum)
+    error_count = sum(1 for p in profile_results if p.get("error"))
+    overall_grade = "F" if error_count else compute_grade(total_passed, total_checks_sum)
 
     full_result = {
         "profiles": profile_results,
@@ -349,6 +350,7 @@ async def run_tests(
         "overallGrade": overall_grade,
         "totalPassed": total_passed,
         "totalChecks": total_checks_sum,
+        "errorCount": error_count,
         "timestamp": timestamp,
         "binaryPath": binary_path,
     }
@@ -367,4 +369,4 @@ async def run_tests(
             Path(save_cert).write_text(cert_text, encoding="utf-8")
             print(f"Certificate saved to: {save_cert}")
 
-    return 0 if total_passed == total_checks_sum else 1
+    return 0 if error_count == 0 and total_checks_sum > 0 and total_passed == total_checks_sum else 1

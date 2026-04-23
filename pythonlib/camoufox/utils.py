@@ -23,7 +23,7 @@ from .exceptions import (
     InvalidPropertyType,
     NonFirefoxFingerprint,
 )
-from .fingerprints import DEFAULT_FINGERPRINT_OS, from_browserforge, from_preset, generate_fingerprint, get_random_preset, _generate_random_font_subset, _generate_random_voice_subset
+from .fingerprints import DEFAULT_FINGERPRINT_OS, from_browserforge, from_preset, generate_fingerprint, get_random_preset, _generate_random_font_subset, generate_voice_config
 from .geolocation import geoip_allowed, get_geolocation
 from .ip import Proxy, public_ip, valid_ipv4, valid_ipv6
 from .locales import handle_locales
@@ -826,12 +826,19 @@ def launch_options(
             update_fonts(config, target_os)
 
     # Generate a unique random voice subset
+    os_name_v = {'win': 'windows', 'mac': 'macos', 'lin': 'linux'}.get(target_os, 'macos')
     if 'voices' not in config:
-        os_name_v = {'win': 'windows', 'mac': 'macos', 'lin': 'linux'}.get(target_os, 'macos')
         try:
-            config['voices'] = _generate_random_voice_subset(os_name_v)
+            config['voices'] = generate_voice_config(os_name_v)
         except Exception:
             pass
+    else:
+        try:
+            config['voices'] = generate_voice_config(os_name_v, config.get('voices'))
+        except Exception:
+            pass
+    if 'voices' in config:
+        config.setdefault('voices:blockIfNotDefined', True)
 
     # Set random seeds for fingerprint noise (per launch)
     set_into(config, 'fonts:spacing_seed', randint(1, 4_294_967_295))  # nosec

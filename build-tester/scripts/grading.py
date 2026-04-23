@@ -8,6 +8,8 @@ import sys
 # ─── Grading ──────────────────────────────────────────────────────────────────
 
 def compute_grade(pass_count: int, total_checks: int) -> str:
+    if total_checks <= 0:
+        return "F"
     fail_count = total_checks - pass_count
     if fail_count == 0:
         return "A"
@@ -21,6 +23,8 @@ def compute_grade(pass_count: int, total_checks: int) -> str:
 
 
 def count_checks(categories: dict) -> tuple:
+    if not isinstance(categories, dict):
+        return 0, 0
     passed = total = 0
     for cat in categories.values():
         if not isinstance(cat, dict):
@@ -37,18 +41,18 @@ def count_all_checks(profile: dict, results: dict, match_results: list) -> tuple
     pass_count = total_checks = 0
 
     for category_name in ("core", "extended", "workers"):
-        p, t = count_checks(results.get(category_name, {}))
+        p, t = count_checks(results.get(category_name) or {})
         pass_count += p
         total_checks += t
 
     # WebRTC
     total_checks += 1
-    if results.get("webrtc", {}).get("passed"):
+    if (results.get("webrtc") or {}).get("passed"):
         pass_count += 1
 
     # Stability
     total_checks += 1
-    if results.get("stability", {}).get("stable"):
+    if (results.get("stability") or {}).get("stable"):
         pass_count += 1
 
     # Match results
@@ -58,8 +62,9 @@ def count_all_checks(profile: dict, results: dict, match_results: list) -> tuple
             pass_count += 1
 
     # Self-destruct (per-context only)
-    if profile.get("mode") == "per-context" and results.get("selfDestruct"):
-        for check in results["selfDestruct"].values():
+    self_destruct = results.get("selfDestruct") or {}
+    if profile.get("mode") == "per-context" and self_destruct:
+        for check in self_destruct.values():
             if check and isinstance(check.get("passed"), bool):
                 total_checks += 1
                 if check["passed"]:
@@ -75,7 +80,7 @@ def adjust_cross_os_font_checks(profile: dict, results: dict) -> None:
     if profile["os"] == host_os:
         return
 
-    font_env = results.get("extended", {}).get("fontEnvironment")
+    font_env = (results.get("extended") or {}).get("fontEnvironment")
     if not font_env:
         return
 
@@ -88,11 +93,11 @@ def adjust_cross_os_font_checks(profile: dict, results: dict) -> None:
 
 def compute_match_results(profile: dict, results: dict) -> list:
     matches = []
-    fp = results.get("fingerprints", {})
-    nav = fp.get("navigator", {})
-    tz = fp.get("timezone", {})
-    screen = fp.get("screen", {})
-    webgl = fp.get("webgl", {})
+    fp = results.get("fingerprints") or {}
+    nav = fp.get("navigator") or {}
+    tz = fp.get("timezone") or {}
+    screen = fp.get("screen") or {}
+    webgl = fp.get("webgl") or {}
 
     if profile["mode"] == "per-context":
         matches.append({"name": "navigator.userAgent", "passed": nav.get("userAgent") == profile["userAgent"], "expected": profile["userAgent"], "actual": nav.get("userAgent", "")})

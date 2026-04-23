@@ -208,7 +208,11 @@ def generate_certificate(full_result: dict, secret: str) -> dict:
         "camoufoxVersion": camoufox_version,
         "passCount": full_result["totalPassed"],
         "totalTests": full_result["totalChecks"],
-        "overallPass": full_result["totalPassed"] == full_result["totalChecks"],
+        "overallPass": (
+            full_result.get("errorCount", 0) == 0
+            and full_result["totalChecks"] > 0
+            and full_result["totalPassed"] == full_result["totalChecks"]
+        ),
         "sectionResults": all_section_results,
         "failedTests": all_failed_tests[:20],
         "profileCount": len(full_result["profiles"]),
