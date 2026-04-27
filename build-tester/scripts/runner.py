@@ -98,11 +98,12 @@ async def run_per_context_phase(
         page = ctx_data["page"]
         profile = ctx_data["profile"]
         try:
-            test_error = await page.evaluate("window.__testError__")
+            test_error, results = await _collect_page_results(page)
             if test_error:
                 pr = {"profile": profile, "results": None, "matchResults": [], "grade": "F", "passCount": 0, "totalChecks": 0, "error": test_error}
+            elif results is None:
+                pr = {"profile": profile, "results": None, "matchResults": [], "grade": "F", "passCount": 0, "totalChecks": 0, "error": "Test completed without window.__testResults__"}
             else:
-                results = await page.evaluate("window.__testResults__")
                 adjust_cross_os_font_checks(profile, results)
                 match_results = compute_match_results(profile, results)
                 pass_count, total_checks = count_all_checks(profile, results, match_results)
@@ -283,56 +284,67 @@ async def run_tests(
             profile = entry["profile"]
             print(f"\nLaunching browser for: {profile['name']}")
 
-            browser = None
-            try:
-                env = {**dict(os.environ), "CAMOU_CONFIG": json.dumps(preset["camouConfig"])}
-                browser = await firefox.launch(
-                    executable_path=binary_path,
-                    headless=True,
-                    env=env,
-                    firefox_user_prefs=FIREFOX_WEBGL_PREFS,
-                )
-
-                vp = preset["contextOptions"].get("viewport")
-                context = await browser.new_context(
-                    viewport=(
-                        {"width": min(vp["width"], 1920), "height": min(vp["height"], 1080)}
-                        if vp else {"width": 1920, "height": 1080}
-                    ),
-                )
-
-                # Inject only WebRTC IP for global profiles (CAMOU_CONFIG handles everything else)
-                await context.add_init_script(
-                    f"try {{ if (typeof window.setWebRTCIPv4 === 'function') window.setWebRTCIPv4({json.dumps(WEBRTC_TEST_IP)}); }} catch(e) {{}}"
-                )
-
-                page = await context.new_page()
-                await page.goto(test_page_url, wait_until="domcontentloaded", timeout=30000)
-                print(f"  Waiting for tests to complete...")
-                await page.wait_for_function("!!window.__testComplete__", timeout=120000)
-
-                test_error = await page.evaluate("window.__testError__")
-                if test_error:
-                    pr = {"profile": profile, "results": None, "matchResults": [], "grade": "F", "passCount": 0, "totalChecks": 0, "error": test_error}
-                else:
-                    results = await page.evaluate("window.__testResults__")
-                    adjust_cross_os_font_checks(profile, results)
-                    results["selfDestruct"] = None  # Not applicable for global profiles
-                    match_results = compute_match_results(profile, results)
-                    pass_count, total_checks = count_all_checks(profile, results, match_results)
-                    grade = compute_grade(pass_count, total_checks)
-                    pr = {"profile": profile, "results": results, "matchResults": match_results, "grade": grade, "passCount": pass_count, "totalChecks": total_checks}
-
-                await browser.close()
+            pr = None
+            last_error = None
+            for attempt in range(2):
                 browser = None
+                try:
+                    env = {**dict(os.environ), "CAMOU_CONFIG": json.dumps(preset["camouConfig"])}
+                    browser = await firefox.launch(
+                        executable_path=binary_path,
+                        headless=True,
+                        env=env,
+                        firefox_user_prefs=FIREFOX_WEBGL_PREFS,
+                    )
 
-            except Exception as e:
-                pr = {"profile": profile, "results": None, "matchResults": [], "grade": "F", "passCount": 0, "totalChecks": 0, "error": str(e)}
-                if browser:
-                    try:
-                        await browser.close()
-                    except Exception:
-                        pass
+                    vp = preset["contextOptions"].get("viewport")
+                    context = await browser.new_context(
+                        viewport=(
+                            {"width": min(vp["width"], 1920), "height": min(vp["height"], 1080)}
+                            if vp else {"width": 1920, "height": 1080}
+                        ),
+                    )
+
+                    # Inject only WebRTC IP for global profiles (CAMOU_CONFIG handles everything else)
+                    await context.add_init_script(
+                        f"try {{ if (typeof window.setWebRTCIPv4 === 'function') window.setWebRTCIPv4({json.dumps(WEBRTC_TEST_IP)}); }} catch(e) {{}}"
+                    )
+
+                    page = await context.new_page()
+                    await page.goto(test_page_url, wait_until="domcontentloaded", timeout=30000)
+                    print(f"  Waiting for tests to complete...")
+                    await page.wait_for_function("!!window.__testComplete__", timeout=180000)
+
+                    test_error, results = await _collect_page_results(page)
+                    if test_error:
+                        pr = {"profile": profile, "results": None, "matchResults": [], "grade": "F", "passCount": 0, "totalChecks": 0, "error": test_error}
+                    elif results is None:
+                        pr = {"profile": profile, "results": None, "matchResults": [], "grade": "F", "passCount": 0, "totalChecks": 0, "error": "Test completed without window.__testResults__"}
+                    else:
+                        adjust_cross_os_font_checks(profile, results)
+                        results["selfDestruct"] = None  # Not applicable for global profiles
+                        match_results = compute_match_results(profile, results)
+                        pass_count, total_checks = count_all_checks(profile, results, match_results)
+                        grade = compute_grade(pass_count, total_checks)
+                        pr = {"profile": profile, "results": results, "matchResults": match_results, "grade": grade, "passCount": pass_count, "totalChecks": total_checks}
+                    break
+
+                except Exception as e:
+                    last_error = e
+                    if attempt == 0 and "Timeout" in str(e):
+                        print(f"  Timeout waiting for {profile['name']} (attempt 1/2); retrying once...")
+                        continue
+                    pr = {"profile": profile, "results": None, "matchResults": [], "grade": "F", "passCount": 0, "totalChecks": 0, "error": str(e)}
+                    break
+                finally:
+                    if browser:
+                        try:
+                            await browser.close()
+                        except Exception:
+                            pass
+
+            if pr is None:
+                pr = {"profile": profile, "results": None, "matchResults": [], "grade": "F", "passCount": 0, "totalChecks": 0, "error": str(last_error) if last_error else "Unknown error"}
 
             profile_results.append(pr)
             print_profile_result(pr)
@@ -370,3 +382,21 @@ async def run_tests(
             print(f"Certificate saved to: {save_cert}")
 
     return 0 if error_count == 0 and total_checks_sum > 0 and total_passed == total_checks_sum else 1
+
+
+async def _collect_page_results(page, retries: int = 40, delay_ms: int = 250):
+    test_error = await page.evaluate("window.__testError__")
+    if test_error:
+        return test_error, None
+
+    results = await page.evaluate("window.__testResults__")
+    for _ in range(retries):
+        if results is not None:
+            break
+        await page.wait_for_timeout(delay_ms)
+        test_error = await page.evaluate("window.__testError__")
+        if test_error:
+            return test_error, None
+        results = await page.evaluate("window.__testResults__")
+
+    return None, results

@@ -76,3 +76,4 @@ node_modules/
 proxies.txt
 checks-bundle.js
 tmp/
+.camoufox-profile/

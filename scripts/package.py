@@ -49,6 +49,7 @@ def _run_process(args):
 
 def add_includes_to_package(package_file, includes, fonts, new_file, target):
     seven_zip = _find_7z()
+    new_file_abs = os.path.abspath(new_file)
     with tempfile.TemporaryDirectory() as temp_dir:
         # Extract package
         _run_process([seven_zip, 'x', package_file, f'-o{temp_dir}'])
@@ -126,8 +127,12 @@ def add_includes_to_package(package_file, includes, fonts, new_file, target):
             elif os.path.exists(os.path.join(target_dir, path)):
                 os.remove(os.path.join(target_dir, path))
 
-        # Update package
-        _run_process([seven_zip, 'u', new_file, f'{temp_dir}/*', '-r', '-mx=9'])
+        # Rebuild the outer archive from scratch so changed files with identical
+        # names/sizes don't get silently retained from a previous package.
+        if os.path.exists(new_file_abs):
+            os.remove(new_file_abs)
+        with temp_cd(temp_dir):
+            _run_process([seven_zip, 'a', new_file_abs, '*', '-r', '-mx=9'])
 
 
 def get_args():

@@ -49,6 +49,15 @@ def voice_names(voices: List[Any]) -> List[str]:
     return names
 
 
+def ensure_speech_voices_init_script(init_script: str) -> str:
+    if 'setSpeechVoices' in init_script:
+        return init_script
+    inject = '  if (typeof w.setSpeechVoices === "function") w.setSpeechVoices("");\n'
+    if init_script.endswith('})();'):
+        return init_script[:-5] + inject + '})();'
+    return init_script + '\n' + inject
+
+
 def convert_preset(ctx):
     """Convert a generate_context_fingerprint() result to camelCase for TypeScript."""
     preset = ctx['preset']
@@ -58,7 +67,7 @@ def convert_preset(ctx):
     webgl = preset.get('webgl', {})
 
     return {
-        'initScript': ctx['init_script'],
+        'initScript': ensure_speech_voices_init_script(ctx['init_script']),
         'contextOptions': {
             'userAgent': ctx['context_options'].get('user_agent'),
             'viewport': ctx['context_options'].get('viewport'),
@@ -92,7 +101,42 @@ def screen_key(preset):
     return (pc.get('screenWidth', 0), pc.get('screenHeight', 0))
 
 
-def generate_unique_screen_presets(os_name, count):
+def is_software_webgl_preset(preset):
+    pc = preset.get('profileConfig', {})
+    webgl_text = ' '.join(
+        str(value).lower()
+        for value in (pc.get('webglVendor', ''), pc.get('webglRenderer', ''))
+    )
+    return any(
+        marker in webgl_text
+        for marker in (
+            'llvmpipe',
+            'swiftshader',
+            'software rasterizer',
+            'softpipe',
+            'lavapipe',
+        )
+    )
+
+
+def generate_hardware_webgl_preset(generate_context_fingerprint, os_name):
+    last_preset = None
+    max_attempts = 100
+    for _ in range(max_attempts):
+        preset = convert_preset(generate_context_fingerprint(os=os_name))
+        if not is_software_webgl_preset(preset):
+            return preset
+        last_preset = preset
+    renderer = 'unknown'
+    if last_preset:
+        renderer = last_preset['profileConfig'].get('webglRenderer', '')
+    raise RuntimeError(
+        f'Unable to generate a non-software WebGL preset for {os_name} '
+        f'after {max_attempts} attempts; last renderer was {renderer}'
+    )
+
+
+def generate_unique_screen_presets(generate_context_fingerprint, os_name, count):
     presets = []
     seen_screens = set()
     attempts = 0
@@ -100,7 +144,7 @@ def generate_unique_screen_presets(os_name, count):
 
     while len(presets) < count and attempts < max_attempts:
         attempts += 1
-        preset = convert_preset(generate_context_fingerprint(os=os_name))
+        preset = generate_hardware_webgl_preset(generate_context_fingerprint, os_name)
         current_screen = screen_key(preset)
         if current_screen in seen_screens:
             continue
@@ -108,7 +152,7 @@ def generate_unique_screen_presets(os_name, count):
         presets.append(preset)
 
     while len(presets) < count:
-        presets.append(convert_preset(generate_context_fingerprint(os=os_name)))
+        presets.append(generate_hardware_webgl_preset(generate_context_fingerprint, os_name))
 
     return presets
 
@@ -123,18 +167,16 @@ def main():
     }
 
     # 3 macOS per-context profiles
-    results['macPerContext'] = generate_unique_screen_presets('macos', 3)
+    results['macPerContext'] = generate_unique_screen_presets(generate_context_fingerprint, 'macos', 3)
 
     # 3 Linux per-context profiles
-    results['linuxPerContext'] = generate_unique_screen_presets('linux', 3)
+    results['linuxPerContext'] = generate_unique_screen_presets(generate_context_fingerprint, 'linux', 3)
 
     # 1 macOS global profile
-    ctx = generate_context_fingerprint(os='macos')
-    results['macGlobal'] = convert_preset(ctx)
+    results['macGlobal'] = generate_hardware_webgl_preset(generate_context_fingerprint, 'macos')
 
     # 1 Linux global profile
-    ctx = generate_context_fingerprint(os='linux')
-    results['linuxGlobal'] = convert_preset(ctx)
+    results['linuxGlobal'] = generate_hardware_webgl_preset(generate_context_fingerprint, 'linux')
 
     json.dump(results, sys.stdout)
 

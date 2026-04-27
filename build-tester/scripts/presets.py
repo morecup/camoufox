@@ -26,6 +26,15 @@ def _voice_names(voices: List[Any]) -> List[str]:
     return names
 
 
+def _ensure_speech_voices_init_script(init_script: str) -> str:
+    if "setSpeechVoices" in init_script:
+        return init_script
+    inject = '  if (typeof w.setSpeechVoices === "function") w.setSpeechVoices("");\n'
+    if init_script.endswith("})();"):
+        return init_script[:-5] + inject + "})();"
+    return init_script + "\n" + inject
+
+
 def _load_generate_context_fingerprint():
     try:
         from camoufox.fingerprints import generate_context_fingerprint
@@ -60,7 +69,7 @@ def convert_preset(ctx: dict) -> dict:
     webgl = preset.get("webgl", {})
 
     return {
-        "initScript": ctx["init_script"],
+        "initScript": _ensure_speech_voices_init_script(ctx["init_script"]),
         "contextOptions": {
             "userAgent": ctx["context_options"].get("user_agent"),
             "viewport": ctx["context_options"].get("viewport"),
@@ -94,6 +103,39 @@ def _screen_key(preset: dict) -> tuple[int, int]:
     return (pc.get("screenWidth", 0), pc.get("screenHeight", 0))
 
 
+def _is_software_webgl_preset(preset: dict) -> bool:
+    pc = preset.get("profileConfig", {})
+    webgl_text = " ".join(
+        str(value).lower()
+        for value in (pc.get("webglVendor", ""), pc.get("webglRenderer", ""))
+    )
+    return any(
+        marker in webgl_text
+        for marker in (
+            "llvmpipe",
+            "swiftshader",
+            "software rasterizer",
+            "softpipe",
+            "lavapipe",
+        )
+    )
+
+
+def _generate_hardware_webgl_preset(generate_context_fingerprint, os_name: str) -> dict:
+    last_preset = None
+    max_attempts = 100
+    for _ in range(max_attempts):
+        preset = convert_preset(generate_context_fingerprint(os=os_name))
+        if not _is_software_webgl_preset(preset):
+            return preset
+        last_preset = preset
+    raise RuntimeError(
+        f"Unable to generate a non-software WebGL preset for {os_name} "
+        f"after {max_attempts} attempts; last renderer was "
+        f"{last_preset['profileConfig'].get('webglRenderer', '') if last_preset else 'unknown'}"
+    )
+
+
 def _generate_unique_screen_presets(
     generate_context_fingerprint, os_name: str, count: int
 ) -> list[dict]:
@@ -104,7 +146,7 @@ def _generate_unique_screen_presets(
 
     while len(presets) < count and attempts < max_attempts:
         attempts += 1
-        preset = convert_preset(generate_context_fingerprint(os=os_name))
+        preset = _generate_hardware_webgl_preset(generate_context_fingerprint, os_name)
         screen_key = _screen_key(preset)
         if screen_key in seen_screens:
             continue
@@ -112,7 +154,7 @@ def _generate_unique_screen_presets(
         presets.append(preset)
 
     while len(presets) < count:
-        presets.append(convert_preset(generate_context_fingerprint(os=os_name)))
+        presets.append(_generate_hardware_webgl_preset(generate_context_fingerprint, os_name))
 
     return presets
 
@@ -129,9 +171,9 @@ def generate_presets() -> dict:
         generate_context_fingerprint, "linux", 3
     )
     print("  Generating macOS global profile...")
-    mac_global = convert_preset(generate_context_fingerprint(os="macos"))
+    mac_global = _generate_hardware_webgl_preset(generate_context_fingerprint, "macos")
     print("  Generating Linux global profile...")
-    linux_global = convert_preset(generate_context_fingerprint(os="linux"))
+    linux_global = _generate_hardware_webgl_preset(generate_context_fingerprint, "linux")
 
     return {
         "macPerContext": mac_per_context,
