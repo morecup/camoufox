@@ -3,18 +3,47 @@ new file mode 100644
 index 0000000000..abcdef1234
 --- /dev/null
 +++ b/dom/base/CanvasFingerprintManager.cpp
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,108 @@
 +/* Camoufox: Per-context canvas fingerprint manager */
 +#include "CanvasFingerprintManager.h"
 +
 +#include <algorithm>
 +#include "MaskConfig.hpp"
++#include "js/Wrapper.h"
 +#include "mozilla/dom/BrowsingContext.h"
 +#include "nsGlobalWindowInner.h"
 +#include "xpcpublic.h"
 +
 +namespace mozilla {
 +namespace dom {
++
++static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
++                                                   JSObject* aObj) {
++  if (!aObj) {
++    return xpc::CurrentWindowOrNull(aCx);
++  }
++  if (!js::IsWrapper(aObj)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
++      return win;
++    }
++  }
++  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
++    return win;
++  }
++  if (JSObject* unwrapped =
++          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
++      return win;
++    }
++  }
++  return xpc::CurrentWindowOrNull(aCx);
++}
 +
 +nsString CanvasFingerprintManager::DisabledKeyForUserContext(uint32_t aId) {
 +  nsAutoString key;
@@ -70,7 +99,7 @@ index 0000000000..abcdef1234
 +
 +bool CanvasFingerprintManager::IsFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                           JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
 +  if (!win) return false;
 +  uint32_t id = 0;
 +  if (BrowsingContext* bc = win->GetBrowsingContext()) {

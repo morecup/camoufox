@@ -57,7 +57,9 @@ screen:
 headers:
   # headers.User-Agent is redundant with navigator.userAgent
   # headers.Accept-Language is redundant with locale:*
-  Accept-Encoding: headers.Accept-Encoding
+  # headers.Accept-Encoding is intentionally not mapped by default.
+  # Overriding transport encodings can break decompression-sensitive sites
+  # such as Cloudflare Turnstile when the HTTP stack state becomes inconsistent.
 
 battery:
   charging: battery:charging

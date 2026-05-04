@@ -97,10 +97,20 @@ index 83a9dcff01..e5c881b8b0 100644
  
 @@ -2098,6 +2112,10 @@ nsresult nsHttpHandler::SetAcceptLanguages() {
  
- nsresult nsHttpHandler::SetAcceptEncodings(const char* aAcceptEncodings,
+nsresult nsHttpHandler::SetAcceptEncodings(const char* aAcceptEncodings,
                                             bool isSecure, bool isDictionary) {
 +  if (auto value = MaskConfig::GetString("headers.Accept-Encoding")) {
-+    mHttpsAcceptEncodings.Assign(nsCString(value.value().c_str()));
++    nsCString spoofed(value.value().c_str());
++    if (isDictionary) {
++      mDictionaryAcceptEncodings.Assign(spoofed);
++    } else if (isSecure) {
++      mHttpsAcceptEncodings.Assign(spoofed);
++    } else {
++      mHttpAcceptEncodings.Assign(spoofed);
++      if (mHttpsAcceptEncodings.IsEmpty()) {
++        mHttpsAcceptEncodings.Assign(spoofed);
++      }
++    }
 +    return NS_OK;
 +  }
    if (isDictionary) {

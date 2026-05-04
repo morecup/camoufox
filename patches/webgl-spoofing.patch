@@ -3,16 +3,45 @@ new file mode 100644
 index 0000000000..abcdef1234
 --- /dev/null
 +++ b/dom/base/WebGLParamsManager.cpp
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,111 @@
 +/* Camoufox: Per-context WebGL parameter manager */
 +#include "WebGLParamsManager.h"
 +
 +#include "mozilla/dom/BrowsingContext.h"
++#include "js/Wrapper.h"
 +#include "nsGlobalWindowInner.h"
 +#include "xpcpublic.h"
 +
 +namespace mozilla {
 +namespace dom {
++
++static nsGlobalWindowInner* ResolveWindowForWebIDL(JSContext* aCx,
++                                                   JSObject* aObj) {
++  if (!aObj) {
++    return xpc::CurrentWindowOrNull(aCx);
++  }
++  if (!js::IsWrapper(aObj)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(aObj)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(aObj)) {
++      return win;
++    }
++  }
++  if (nsGlobalWindowInner* win = xpc::SandboxWindowOrNull(aObj, aCx)) {
++    return win;
++  }
++  if (JSObject* unwrapped =
++          js::CheckedUnwrapDynamic(aObj, aCx, /* stopAtWindowProxy = */ false)) {
++    if (nsGlobalWindowInner* win = xpc::WindowOrNull(unwrapped)) {
++      return win;
++    }
++    if (nsGlobalWindowInner* win = xpc::WindowGlobalOrNull(unwrapped)) {
++      return win;
++    }
++  }
++  return xpc::CurrentWindowOrNull(aCx);
++}
 +
 +nsString WebGLParamsManager::VendorDisabledKey(uint32_t aId) {
 +  nsAutoString key;
@@ -60,7 +89,7 @@ index 0000000000..abcdef1234
 +
 +bool WebGLParamsManager::IsVendorFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                           JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
 +  if (!win) return false;
 +  uint32_t id = 0;
 +  if (BrowsingContext* bc = win->GetBrowsingContext()) {
@@ -73,7 +102,7 @@ index 0000000000..abcdef1234
 +
 +bool WebGLParamsManager::IsRendererFunctionEnabledForWebIDL(JSContext* aCx,
 +                                                             JSObject* aObj) {
-+  nsGlobalWindowInner* win = xpc::WindowOrNull(aObj);
++  nsGlobalWindowInner* win = ResolveWindowForWebIDL(aCx, aObj);
 +  if (!win) return false;
 +  uint32_t id = 0;
 +  if (BrowsingContext* bc = win->GetBrowsingContext()) {
