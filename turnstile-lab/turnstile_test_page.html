@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Turnstile Lab</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4efe5;
+      --panel: rgba(255, 255, 255, 0.88);
+      --ink: #1f2b25;
+      --muted: #5d685f;
+      --line: rgba(31, 43, 37, 0.16);
+      --accent: #17795d;
+      --accent-soft: rgba(23, 121, 93, 0.14);
+      --warn: #8f4b1f;
+      --error: #b42318;
+      --shadow: 0 18px 46px rgba(20, 29, 26, 0.14);
+      font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(23, 121, 93, 0.2), transparent 32%),
+        linear-gradient(160deg, #f4efe5 0%, #ece6d9 42%, #e5dccb 100%);
+      color: var(--ink);
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 24px auto 40px;
+      display: grid;
+      gap: 16px;
+    }
+
+    .hero,
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+
+    .hero {
+      padding: 24px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .title-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    h1,
+    h2 {
+      margin: 0;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    p {
+      margin: 0;
+      line-height: 1.55;
+      color: var(--muted);
+    }
+
+    .mode-links,
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .chip,
+    button,
+    a.button-link {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 10px 14px;
+      font-size: 14px;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+    }
+
+    .chip.active,
+    button:hover,
+    a.button-link:hover {
+      transform: translateY(-1px);
+      border-color: rgba(23, 121, 93, 0.42);
+      background: var(--accent-soft);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 16px;
+    }
+
+    .stack {
+      display: grid;
+      gap: 16px;
+    }
+
+    .panel {
+      padding: 18px;
+    }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    #widget-shell {
+      min-height: 210px;
+      border: 1px dashed rgba(23, 121, 93, 0.35);
+      border-radius: 20px;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(250, 247, 241, 0.92));
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      overflow: hidden;
+    }
+
+    #widget {
+      min-height: 70px;
+      width: 100%;
+      display: grid;
+      place-items: center;
+    }
+
+    pre {
+      margin: 0;
+      padding: 14px;
+      overflow: auto;
+      border-radius: 16px;
+      background: #18211d;
+      color: #eff6f2;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+      min-height: 120px;
+      max-height: 380px;
+    }
+
+    .note {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .status-ok {
+      color: var(--accent);
+    }
+
+    .status-warn {
+      color: var(--warn);
+    }
+
+    .status-error {
+      color: var(--error);
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    @media (max-width: 920px) {
+      .layout,
+      .two-col {
+        grid-template-columns: 1fr;
+      }
+
+      main {
+        width: min(100vw - 20px, 1180px);
+      }
+    }
+  </style>
+  <script>
+    (() => {
+      const MODES = {
+        "dummy-success": {
+          label: "Visible Success",
+          sitekey: "1x00000000000000000000AA",
+          description: "Visible widget. The token should verify successfully with the always-pass secret.",
+        },
+        "dummy-fail": {
+          label: "Visible Fail",
+          sitekey: "2x00000000000000000000AB",
+          description: "Visible widget. The failure path should surface through callbacks or verification.",
+        },
+        "dummy-invisible-success": {
+          label: "Invisible Success",
+          sitekey: "1x00000000000000000000BB",
+          description: "Invisible widget. It executes immediately after render.",
+          size: "invisible",
+          execution: "execute",
+          autoExecute: true,
+        },
+        "dummy-invisible-fail": {
+          label: "Invisible Fail",
+          sitekey: "2x00000000000000000000BB",
+          description: "Invisible widget. The error path should be observable quickly.",
+          size: "invisible",
+          execution: "execute",
+          autoExecute: true,
+        },
+        "dummy-interactive": {
+          label: "Forced Interactive",
+          sitekey: "3x00000000000000000000FF",
+          description: "Cloudflare should force an interactive challenge. This is the most useful mode for iframe and token path debugging.",
+        },
+      };
+
+      const params = new URLSearchParams(window.location.search);
+      const selectedMode = params.get("mode") || "dummy-interactive";
+      const modeConfig = MODES[selectedMode] || MODES["dummy-interactive"];
+      const randomId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+      const state = {
+        mode: selectedMode,
+        config: {
+          ...modeConfig,
+          appearance: params.get("appearance") || modeConfig.appearance || "always",
+          execution: params.get("execution") || modeConfig.execution || null,
+          size: params.get("size") || modeConfig.size || null,
+          autoExecute: params.get("auto_execute") === "1" || Boolean(modeConfig.autoExecute),
+          sessionId: params.get("session") || randomId("session"),
+          caseId: params.get("case") || randomId("case"),
+        },
+        startedAt: Date.now(),
+        scriptLoaded: false,
+        scriptTimedOut: false,
+        renderAttempted: false,
+        widgetId: null,
+        callbackToken: null,
+        lastObservedResponse: null,
+        lastErrorCode: null,
+        expiredCount: 0,
+        timeoutCount: 0,
+        beforeInteractiveCount: 0,
+        afterInteractiveCount: 0,
+        unsupportedCount: 0,
+        pollCount: 0,
+        verifyInFlight: false,
+        verifyDone: false,
+        lastVerify: null,
+        lastReportAck: null,
+        events: [],
+        postMessages: [],
+        iframeSnapshot: [],
+        lastPayload: null,
+      };
+      let cachedFingerprint = null;
+
+      function limitList(list, maxSize) {
+        if (list.length > maxSize) {
+          list.splice(0, list.length - maxSize);
+        }
+      }
+
+      function isoNow() {
+        return new Date().toISOString();
+      }
+
+      function summarizeValue(value, depth = 0) {
+        if (depth >= 2) {
+          return typeof value;
+        }
+        if (value === null || value === undefined) {
+          return value;
+        }
+        if (typeof value === "string") {
+          return value.length > 220 ? `${value.slice(0, 220)}...` : value;
+        }
+        if (typeof value === "number" || typeof value === "boolean") {
+          return value;
+        }
+        if (Array.isArray(value)) {
+          return value.slice(0, 10).map((item) => summarizeValue(item, depth + 1));
+        }
+        if (typeof value === "object") {
+          const output = {};
+          for (const key of Object.keys(value).slice(0, 12)) {
+            output[key] = summarizeValue(value[key], depth + 1);
+          }
+          return output;
+        }
+        return String(value);
+      }
+
+      function log(type, detail) {
+        state.events.push({
+          ts: isoNow(),
+          elapsedMs: Date.now() - state.startedAt,
+          type,
+          detail: summarizeValue(detail),
+        });
+        limitList(state.events, 220);
+        renderAll();
+      }
+
+      function getHiddenInputResponse() {
+        const field = document.querySelector('input[name="cf-turnstile-response"]');
+        return field && field.value ? field.value : null;
+      }
+
+      function getResponseSafe() {
+        if (!window.turnstile || state.widgetId === null || state.widgetId === undefined) {
+          return null;
+        }
+        try {
+          return window.turnstile.getResponse(state.widgetId) || null;
+        } catch (error) {
+          return `__getResponseError__:${String(error)}`;
+        }
+      }
+
+      function snapshotIframes() {
+        return Array.from(document.querySelectorAll("iframe")).map((frame, index) => {
+          let sameOriginAccessible = false;
+          let href = null;
+          try {
+            href = frame.contentWindow && frame.contentWindow.location ? frame.contentWindow.location.href : null;
+            sameOriginAccessible = Boolean(href);
+          } catch (_error) {
+            sameOriginAccessible = false;
+          }
+
+          return {
+            index,
+            id: frame.id || null,
+            name: frame.name || null,
+            title: frame.title || null,
+            src: frame.getAttribute("src") || frame.src || null,
+            sandbox: frame.getAttribute("sandbox") || null,
+            width: frame.clientWidth,
+            height: frame.clientHeight,
+            sameOriginAccessible,
+            sameOriginHref: sameOriginAccessible ? href : null,
+          };
+        });
+      }
+
+      function getFingerprintSnapshot() {
+        if (cachedFingerprint) {
+          return cachedFingerprint;
+        }
+
+        const canvas = document.createElement("canvas");
+        const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+        const webgl = { vendor: null, renderer: null };
+        if (gl) {
+          const ext = gl.getExtension("WEBGL_debug_renderer_info");
+          if (ext) {
+            webgl.vendor = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL);
+            webgl.renderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+          }
+        }
+
+        cachedFingerprint = {
+          userAgent: navigator.userAgent,
+          platform: navigator.platform,
+          oscpu: navigator.oscpu || null,
+          hardwareConcurrency: navigator.hardwareConcurrency || null,
+          webdriver: navigator.webdriver,
+          language: navigator.language,
+          languages: navigator.languages,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          screen: {
+            width: screen.width,
+            height: screen.height,
+            availWidth: screen.availWidth,
+            availHeight: screen.availHeight,
+            colorDepth: screen.colorDepth,
+            pixelDepth: screen.pixelDepth,
+          },
+          viewport: {
+            width: window.innerWidth,
+            height: window.innerHeight,
+            devicePixelRatio: window.devicePixelRatio,
+          },
+          webgl,
+        };
+        return cachedFingerprint;
+      }
+
+      function buildSnapshot(reason) {
+        state.iframeSnapshot = snapshotIframes();
+        return {
+          reason,
+          sentAt: isoNow(),
+          mode: state.mode,
+          sessionId: state.config.sessionId,
+          caseId: state.config.caseId,
+          location: window.location.href,
+          title: document.title,
+          readyState: document.readyState,
+          visibilityState: document.visibilityState,
+          scriptLoaded: state.scriptLoaded,
+          scriptTimedOut: state.scriptTimedOut,
+          widgetId: state.widgetId,
+          callbackToken: state.callbackToken,
+          currentResponse: getResponseSafe(),
+          hiddenInputResponse: getHiddenInputResponse(),
+          lastErrorCode: state.lastErrorCode,
+          expiredCount: state.expiredCount,
+          timeoutCount: state.timeoutCount,
+          beforeInteractiveCount: state.beforeInteractiveCount,
+          afterInteractiveCount: state.afterInteractiveCount,
+          unsupportedCount: state.unsupportedCount,
+          pollCount: state.pollCount,
+          lastVerify: state.lastVerify,
+          config: state.config,
+          iframes: state.iframeSnapshot,
+          postMessages: state.postMessages.slice(-30),
+          events: state.events.slice(-60),
+          fingerprint: getFingerprintSnapshot(),
+        };
+      }
+
+      async function postJson(url, body) {
+        const response = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        let payload = null;
+        try {
+          payload = await response.json();
+        } catch (_error) {
+          payload = null;
+        }
+        return { status: response.status, payload };
+      }
+
+      async function maybeVerify(reason) {
+        const token = state.callbackToken || getHiddenInputResponse() || getResponseSafe();
+        if (!token || state.verifyInFlight || state.verifyDone || String(token).startsWith("__getResponseError__")) {
+          return null;
+        }
+
+        state.verifyInFlight = true;
+        log("siteverify.request", { reason, tokenLength: String(token).length });
+        try {
+          const result = await postJson("/siteverify", {
+            mode: state.mode,
+            token,
+            sessionId: state.config.sessionId,
+            caseId: state.config.caseId,
+            widgetId: state.widgetId,
+            reason,
+          });
+          state.lastVerify = result.payload;
+          state.verifyDone = Boolean(result.payload && result.payload.ok);
+          log("siteverify.response", result.payload || { status: result.status });
+          renderAll();
+          return result.payload;
+        } catch (error) {
+          state.lastVerify = { ok: false, transportError: String(error) };
+          log("siteverify.transport-error", { error: String(error) });
+          renderAll();
+          return null;
+        } finally {
+          state.verifyInFlight = false;
+        }
+      }
+
+      async function postReport(reason) {
+        const snapshot = buildSnapshot(reason);
+        state.lastPayload = snapshot;
+        try {
+          const result = await postJson("/report", snapshot);
+          state.lastReportAck = result.payload;
+        } catch (error) {
+          state.lastReportAck = { ok: false, error: String(error) };
+        }
+        renderAll();
+        return snapshot;
+      }
+
+      async function flush(reason) {
+        await maybeVerify(reason);
+        return postReport(reason);
+      }
+
+      async function renderWidget() {
+        if (!window.turnstile || state.renderAttempted) {
+          return;
+        }
+
+        state.renderAttempted = true;
+        const options = {
+          sitekey: state.config.sitekey,
+          appearance: state.config.appearance,
+          callback: async (token) => {
+            state.callbackToken = token;
+            log("callback", { tokenLength: String(token).length });
+            await flush("callback");
+          },
+          "error-callback": async (code) => {
+            state.lastErrorCode = code || "unknown";
+            log("error-callback", { code: state.lastErrorCode });
+            await postReport("error-callback");
+          },
+          "expired-callback": async () => {
+            state.expiredCount += 1;
+            log("expired-callback", { count: state.expiredCount });
+            await postReport("expired-callback");
+          },
+          "timeout-callback": async () => {
+            state.timeoutCount += 1;
+            log("timeout-callback", { count: state.timeoutCount });
+            await postReport("timeout-callback");
+          },
+          "before-interactive-callback": async () => {
+            state.beforeInteractiveCount += 1;
+            log("before-interactive", { count: state.beforeInteractiveCount });
+            await postReport("before-interactive");
+          },
+          "after-interactive-callback": async () => {
+            state.afterInteractiveCount += 1;
+            log("after-interactive", { count: state.afterInteractiveCount });
+            await postReport("after-interactive");
+          },
+          "unsupported-callback": async () => {
+            state.unsupportedCount += 1;
+            log("unsupported-callback", { count: state.unsupportedCount });
+            await postReport("unsupported-callback");
+          },
+        };
+
+        if (state.config.execution) {
+          options.execution = state.config.execution;
+        }
+        if (state.config.size) {
+          options.size = state.config.size;
+        }
+
+        state.widgetId = window.turnstile.render("#widget", options);
+        log("turnstile.render", {
+          widgetId: state.widgetId,
+          appearance: state.config.appearance,
+          size: state.config.size,
+          execution: state.config.execution,
+        });
+        await postReport("rendered");
+
+        if (state.config.autoExecute || state.config.execution === "execute") {
+          window.setTimeout(async () => {
+            try {
+              window.turnstile.execute(state.widgetId);
+              log("turnstile.execute", { widgetId: state.widgetId });
+              await postReport("execute");
+            } catch (error) {
+              log("turnstile.execute-error", { error: String(error) });
+              await postReport("execute-error");
+            }
+          }, 350);
+        }
+      }
+
+      function renderModeLinks() {
+        const container = document.getElementById("mode-links");
+        container.innerHTML = "";
+        for (const [mode, config] of Object.entries(MODES)) {
+          const link = document.createElement("a");
+          link.className = `chip ${mode === state.mode ? "active" : ""}`;
+          const next = new URL(window.location.href);
+          next.searchParams.set("mode", mode);
+          next.searchParams.set("session", state.config.sessionId);
+          next.searchParams.set("case", `${state.config.caseId}-${mode}`);
+          link.href = next.toString();
+          link.textContent = config.label;
+          container.appendChild(link);
+        }
+      }
+
+      function renderAll() {
+        const token = state.callbackToken || getHiddenInputResponse() || getResponseSafe();
+        const verifyResponse = state.lastVerify && state.lastVerify.response ? state.lastVerify.response : null;
+        const verifySuccess = verifyResponse && typeof verifyResponse === "object" ? verifyResponse.success : null;
+        const summary = {
+          mode: state.mode,
+          sitekey: state.config.sitekey,
+          sessionId: state.config.sessionId,
+          caseId: state.config.caseId,
+          widgetId: state.widgetId,
+          scriptLoaded: state.scriptLoaded,
+          scriptTimedOut: state.scriptTimedOut,
+          renderAttempted: state.renderAttempted,
+          tokenPresent: Boolean(token && !String(token).startsWith("__getResponseError__")),
+          tokenLength: token && !String(token).startsWith("__getResponseError__") ? String(token).length : 0,
+          errorCode: state.lastErrorCode,
+          verifySuccess,
+          verifyResponse,
+          iframeCount: state.iframeSnapshot.length,
+          beforeInteractiveCount: state.beforeInteractiveCount,
+          afterInteractiveCount: state.afterInteractiveCount,
+          expiredCount: state.expiredCount,
+          timeoutCount: state.timeoutCount,
+          unsupportedCount: state.unsupportedCount,
+        };
+
+        document.getElementById("summary").textContent = JSON.stringify(summary, null, 2);
+        document.getElementById("config-view").textContent = JSON.stringify(state.config, null, 2);
+        document.getElementById("iframe-view").textContent = JSON.stringify(state.iframeSnapshot, null, 2);
+        document.getElementById("messages-view").textContent = JSON.stringify(state.postMessages.slice(-24), null, 2);
+        document.getElementById("events-view").textContent = JSON.stringify(state.events.slice(-36), null, 2);
+        document.getElementById("payload-view").textContent = JSON.stringify(state.lastPayload, null, 2);
+        document.getElementById("mode-title").textContent = modeConfig.label;
+        document.getElementById("mode-desc").textContent = modeConfig.description;
+      }
+
+      window.__tsOnload = async () => {
+        state.scriptLoaded = true;
+        log("script.loaded", {
+          hasTurnstile: Boolean(window.turnstile),
+          keys: window.turnstile ? Object.keys(window.turnstile) : [],
+        });
+        await renderWidget();
+        renderAll();
+      };
+
+      window.__tsLab = {
+        state,
+        snapshot: buildSnapshot,
+        postReport,
+        flush,
+        maybeVerify,
+      };
+
+      window.addEventListener("message", (event) => {
+        state.postMessages.push({
+          ts: isoNow(),
+          origin: event.origin,
+          data: summarizeValue(event.data),
+        });
+        limitList(state.postMessages, 120);
+        renderAll();
+      });
+
+      window.addEventListener("error", (event) => {
+        log("window.error", {
+          message: event.message,
+          filename: event.filename,
+          lineno: event.lineno,
+          colno: event.colno,
+        });
+      });
+
+      window.addEventListener("unhandledrejection", (event) => {
+        log("window.unhandledrejection", summarizeValue(event.reason));
+      });
+
+      document.addEventListener("visibilitychange", () => {
+        log("visibilitychange", { visibilityState: document.visibilityState });
+      });
+
+      const observer = new MutationObserver(() => {
+        const frames = snapshotIframes();
+        const previous = JSON.stringify(state.iframeSnapshot);
+        const current = JSON.stringify(frames);
+        state.iframeSnapshot = frames;
+        if (previous !== current) {
+          log("iframe.update", { count: frames.length, urls: frames.map((frame) => frame.src).filter(Boolean).slice(0, 5) });
+        }
+      });
+
+      window.addEventListener("DOMContentLoaded", async () => {
+        renderModeLinks();
+        observer.observe(document.documentElement, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["src", "title", "sandbox"],
+        });
+
+        state.iframeSnapshot = snapshotIframes();
+        renderAll();
+        log("page.ready", { href: window.location.href });
+        await postReport("page-ready");
+
+        document.getElementById("report-now").addEventListener("click", async () => {
+          log("manual.report", {});
+          await flush("manual-report");
+        });
+
+        document.getElementById("reload-page").addEventListener("click", () => {
+          window.location.reload();
+        });
+
+        window.setTimeout(async () => {
+          if (!state.scriptLoaded) {
+            state.scriptTimedOut = true;
+            log("script.timeout", {});
+            await postReport("script-timeout");
+          }
+        }, 12000);
+
+        window.setInterval(async () => {
+          state.pollCount += 1;
+          const response = getHiddenInputResponse() || getResponseSafe();
+          if (response && response !== state.lastObservedResponse && !String(response).startsWith("__getResponseError__")) {
+            state.lastObservedResponse = response;
+            log("response.seen", { tokenLength: String(response).length });
+            await flush("response-seen");
+            return;
+          }
+
+          if (state.pollCount % 5 === 0) {
+            await postReport("heartbeat");
+          }
+          renderAll();
+        }, 1000);
+      });
+    })();
+  </script>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=__tsOnload&render=explicit" async defer></script>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div class="title-row">
+        <div>
+          <div class="pill">Turnstile Lab</div>
+          <h1 id="mode-title">Turnstile Mode</h1>
+          <p id="mode-desc"></p>
+        </div>
+        <div class="actions">
+          <button id="report-now" type="button">Report Now</button>
+          <button id="reload-page" type="button">Reload</button>
+          <a class="button-link" href="https://2captcha.com/demo/cloudflare-turnstile" target="_blank" rel="noreferrer">2captcha Demo</a>
+          <a class="button-link" href="https://nopecha.com/demo/cloudflare" target="_blank" rel="noreferrer">NopeCHA Demo</a>
+        </div>
+      </div>
+      <div id="mode-links" class="mode-links"></div>
+      <p class="note">This page records render lifecycle, iframe changes, postMessage traffic, callback state, token visibility, and verification responses. Pair it with <code>run_probe.py</code> to compare binaries and launch paths.</p>
+    </section>
+
+    <section class="layout">
+      <div class="stack">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Widget</h2>
+            <span class="pill">Live</span>
+          </div>
+          <div id="widget-shell">
+            <div id="widget"></div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Summary</h2>
+            <span class="pill">Current</span>
+          </div>
+          <pre id="summary"></pre>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Event Log</h2>
+            <span class="pill">Recent</span>
+          </div>
+          <pre id="events-view"></pre>
+        </article>
+      </div>
+
+      <div class="stack">
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Config</h2>
+            <span class="pill">Launch</span>
+          </div>
+          <pre id="config-view"></pre>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Iframes</h2>
+            <span class="pill">DOM</span>
+          </div>
+          <pre id="iframe-view"></pre>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Messages</h2>
+            <span class="pill">postMessage</span>
+          </div>
+          <pre id="messages-view"></pre>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <h2>Last Payload</h2>
+            <span class="pill">report</span>
+          </div>
+          <pre id="payload-view"></pre>
+        </article>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
